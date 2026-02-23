@@ -1,0 +1,20 @@
+# Core dependencies
+requests>=2.31.0
+python-dotenv>=1.0.0
+supabase>=2.0.0
+
+# Cryptography for credential encryption
+cryptography>=41.0.0
+
+# Selenium for OAuth automation
+selenium>=4.15.0
+webdriver-manager>=4.0.0
+
+# Celery + Redis (tarefas assíncronas e scheduler — arquitetura_sincronizacao.md)
+celery>=5.3.0
+redis>=5.0.0
+kombu>=5.3.0
+
+# Data processing (optional, for future use)
+pandas>=2.1.0
+openpyxl>=3.1.0

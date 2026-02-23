@@ -1,0 +1,178 @@
+"""
+Collector: busca detalhes de vendas já normalizadas (core.sales) e coleta itens para staging.
+Faz GET /pedidos/{idPedido} para cada venda e extrai o array 'itens'.
+Em sync incremental, deve receber apenas os external_id das vendas recém-normalizadas.
+"""
+import logging
+import time
+from typing import List, Dict, Any, Optional
+from datetime import datetime, timezone
+
+from src.database.supabase_client import SupabaseClient
+from src.auth.token_manager import TokenManager
+from src.integrations.tiny_client import TinyClient
+
+logger = logging.getLogger(__name__)
+
+# Tamanho do lote para inserção no Supabase
+STAGING_BATCH_SIZE = 100
+
+
+class SaleItemsCollector:
+    """Coleta itens de vendas (produtos vendidos) para o staging."""
+
+    def __init__(self, db: SupabaseClient, token_manager: TokenManager):
+        self.db = db
+        self.token_manager = token_manager
+
+    def collect_sale_items(
+        self,
+        company_id: str,
+        connection_id: str,
+        erp_type: str = "tiny",
+        batch_size: int = 100,
+        sale_external_ids: Optional[List[str]] = None,
+    ) -> int:
+        """
+        Coleta itens de vendas via GET /pedidos/{idPedido} e grava no staging.
+
+        Se sale_external_ids for informado, busca itens apenas dessas vendas (sync incremental).
+        Se for None, busca de todas as vendas em core.sales (comportamento legado / full).
+
+        Args:
+            company_id: ID da empresa
+            connection_id: ID da conexão ERP
+            erp_type: Tipo do ERP (padrão: 'tiny')
+            batch_size: Quantas vendas buscar por vez do banco quando sale_external_ids é None
+            sale_external_ids: Lista de external_id das vendas para as quais buscar itens (apenas essas)
+
+        Returns:
+            Número total de itens coletados
+        """
+        print(f"\n🛍️  Coletando itens de vendas...")
+
+        connection = self.db.get_erp_connection_by_id(connection_id)
+        if not connection or not connection.get("is_active"):
+            raise ValueError(f"Conexão {connection_id} não está ativa")
+
+        access_token = self.token_manager.get_valid_token(connection_id)
+        tiny_client = TinyClient(access_token)
+
+        total_items = 0
+        total_sales_processed = 0
+        total_sales_failed = 0
+        total_sales_no_items = 0
+        fetched_at = datetime.now(timezone.utc)
+        api_times: List[float] = []
+        t_phase_start = time.perf_counter()
+
+        if sale_external_ids is not None:
+            # Incremental: apenas as vendas recém-normalizadas nesta execução
+            if not sale_external_ids:
+                print("⚠️  Nenhuma venda nova para coletar itens (lista vazia)")
+                return 0
+            sales = self.db.get_sales_from_core_by_external_ids(
+                company_id, erp_type, sale_external_ids
+            )
+            if not sales:
+                print("⚠️  Nenhuma venda encontrada no core para os external_ids informados")
+                return 0
+            n_sales = len(sales)
+            print(f"📊 Coletando itens de {n_sales} venda(s) normalizada(s) nesta execução...")
+            if n_sales > 100:
+                print(f"   (cada venda = 1 requisição à API; ~{n_sales} req podem levar alguns minutos)")
+            sales_batches = [sales]
+        else:
+            # Full: todas as vendas do core (paginação)
+            sales_batches = []
+            offset = 0
+            while True:
+                sales = self.db.get_sales_from_core(
+                    company_id, erp_type, limit=batch_size, offset=offset
+                )
+                if not sales:
+                    break
+                sales_batches.append(sales)
+                if len(sales) < batch_size:
+                    break
+                offset += batch_size
+            if not sales_batches:
+                print("⚠️  Nenhuma venda normalizada encontrada para coletar itens")
+                return 0
+            print(f"📊 Processando vendas em lotes de {batch_size}...")
+
+        first_batch = True
+        for sales in sales_batches:
+            if first_batch:
+                first_batch = False
+
+            batch_failed = 0
+            batch_no_items = 0
+            batch_api_count = 0
+
+            sale_ext_ids = [str(s.get("external_id")) for s in sales if s.get("external_id")]
+            staging_id_map = self.db.get_staging_sale_ids_by_external_ids(
+                company_id, sale_ext_ids
+            )
+
+            total_in_batch = len(sales)
+            for idx, sale in enumerate(sales):
+                sale_external_id = sale.get("external_id")
+                if not sale_external_id:
+                    continue
+                sale_staging_id = staging_id_map.get(str(sale_external_id))
+                try:
+                    details, elapsed = tiny_client.fetch_sale_details_timed(str(sale_external_id))
+                    api_times.append(elapsed)
+                    batch_api_count += 1
+                    if not details:
+                        batch_failed += 1
+                        total_sales_failed += 1
+                        continue
+                    items = details.get("itens") or []
+                    if not items:
+                        batch_no_items += 1
+                        total_sales_no_items += 1
+                        continue
+                    n = self.db.insert_staging_sale_items_batch(
+                        company_id=company_id,
+                        sale_external_id=sale_external_id,
+                        sale_staging_id=sale_staging_id,
+                        items=items,
+                        fetched_at=fetched_at,
+                    )
+                    total_items += n
+                    total_sales_processed += 1
+                except Exception as e:
+                    logger.exception("Erro ao coletar itens da venda %s: %s", sale_external_id, e)
+                    batch_failed += 1
+                    total_sales_failed += 1
+                    continue
+
+                # Progresso a cada 50 vendas (768 requisições levam vários minutos)
+                if (idx + 1) % 50 == 0:
+                    print(f"   → {idx + 1}/{total_in_batch} vendas consultadas | {total_items} itens até agora...")
+
+            batch_time = sum(api_times[-batch_api_count:]) if batch_api_count else 0
+            avg_req = (batch_time / batch_api_count) if batch_api_count else 0
+            status_msg = f"   → {total_sales_processed} vendas ({total_items} itens) | API: {batch_time:.1f}s ({batch_api_count} req, ~{avg_req:.2f}s/req)"
+            if batch_failed > 0 or batch_no_items > 0:
+                status_msg += f" | {batch_failed} falharam | {batch_no_items} sem itens"
+            print(status_msg)
+
+        t_phase_elapsed = time.perf_counter() - t_phase_start
+        print(f"\n✅ Resumo da coleta de itens:")
+        print(f"   - {total_sales_processed} vendas processadas | {total_items} itens coletados")
+        if api_times:
+            total_api = sum(api_times)
+            avg_api = total_api / len(api_times)
+            min_api = min(api_times)
+            max_api = max(api_times)
+            print(f"   - ⏱️  API (GET /pedidos/{{id}}): {len(api_times)} requisições | total {total_api:.1f}s | média {avg_api:.2f}s/req | min {min_api:.2f}s | max {max_api:.2f}s")
+            print(f"   - ⏱️  Fase completa: {t_phase_elapsed:.1f}s")
+        if total_sales_failed > 0:
+            print(f"   - ⚠️  {total_sales_failed} vendas falharam na coleta")
+        if total_sales_no_items > 0:
+            print(f"   - ℹ️  {total_sales_no_items} vendas não possuem itens")
+
+        return total_items

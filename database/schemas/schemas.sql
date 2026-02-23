@@ -1,0 +1,5 @@
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+
+CREATE SCHEMA auth_integrations;
+CREATE SCHEMA staging;
+CREATE SCHEMA core;
