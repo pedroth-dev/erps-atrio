@@ -56,6 +56,7 @@ REDIS_URL=redis://localhost:6379/0
 
 **Importante:**
 - A `ENCRYPTION_KEY` deve ser uma string de 32 caracteres usada para criptografar credenciais no banco
+- **Cada instalação** do projeto usa sua própria chave: os dados no seu banco foram criptografados com a sua chave; quem clona o repo usa outra chave e outro banco — ninguém com "uma key qualquer" tem acesso às suas credenciais
 - **Nunca** commite o arquivo `.env` no repositório
 - Veja abaixo como gerar a `ENCRYPTION_KEY`
 
