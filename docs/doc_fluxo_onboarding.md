@@ -38,7 +38,7 @@ Antes de qualquer inserção no banco, o script valida os dados recebidos do for
   - **Client ID** — ID da aplicação registrada no ERP (ex.: Tiny)
   - **Client Secret** — segredo da aplicação (será criptografado antes de salvar)
   - **Redirect URI** — URI de redirecionamento configurada na aplicação do ERP
-- `erp_type` deve ser um valor conhecido (`tiny`, `bling`, `omie`, etc.)
+- `erp_type` deve ser um valor conhecido (`tiny`, `bling`, `omie`, `contaazul`, etc.)
 
 Sem o Client ID e o Client Secret, não é possível trocar o `code` (obtido no fluxo OAuth) por `access_token` e `refresh_token`, nem renovar os tokens depois. Por isso essas credenciais são obrigatórias no onboarding.
 
@@ -82,11 +82,11 @@ O Selenium executa em modo headless (sem interface gráfica) na VPS e segue os s
 
 ```
 1. Descriptografa o login e senha do banco
-2. Abre a URL de autorização do Tiny
+2. Abre a URL de autorização do ERP (Tiny, Conta Azul, etc.)
 3. Preenche login e senha automaticamente
 4. Confirma a autorização
 5. Captura o code gerado na URL de retorno
-6. Usa client_id e client_secret (do banco) para trocar o code por access_token + refresh_token via API do Tiny
+6. Usa client_id e client_secret (do banco) para trocar o code por access_token + refresh_token via API do ERP
 ```
 
 O **Client ID** e o **Client Secret** fornecidos no onboarding são necessários nesse passo 6: a API do ERP exige essas credenciais da aplicação para emitir os tokens. Sem elas, a conexão não pode ser concluída.
@@ -119,9 +119,9 @@ A partir desse momento a conexão está ativa e pronta para uso.
 Com a conexão ativa, o scheduler enfileira automaticamente as primeiras tarefas de sincronização para a nova empresa:
 
 ```
-Celery recebe as tarefas:
-  → sync_tiny_sales(company_id)
-  → sync_tiny_stock(company_id)
+Celery recebe as tarefas conforme o erp_type da conexão:
+  → Tiny: sync_tiny_sales(company_id), sync_tiny_stock(company_id)
+  → Conta Azul: sync_contaazul_sales(company_id), sync_contaazul_stock(company_id)
 
 Cada tarefa:
   1. token_manager verifica e garante token válido

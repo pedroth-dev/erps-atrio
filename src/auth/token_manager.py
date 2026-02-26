@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 import requests
 import time
 
-from src.config.settings import TINY_TOKEN_URL, TINY_AUTH_URL
+from src.config.settings import TINY_TOKEN_URL, CONTAZUL_TOKEN_URL
 from src.database.supabase_client import SupabaseClient
 class TokenManager:
     """Gerencia tokens OAuth para conexões ERP."""
@@ -42,6 +42,9 @@ class TokenManager:
         if not conn:
             raise ValueError(f"Conexão {connection_id} não encontrada")
         
+        # Garante que sempre temos um erp_type efetivo (prioriza argumento explícito)
+        effective_erp_type = erp_type or conn.get("erp_type") or "tiny"
+        
         # Verifica se o access_token ainda é válido (com margem de 5 minutos)
         access_expires_at = conn.get("access_token_expires_at")
         if access_expires_at:
@@ -61,16 +64,16 @@ class TokenManager:
             if datetime.now(timezone.utc) < refresh_expires_dt:
                 # Refresh token ainda válido - renova
                 refresh_token = self.db.get_refresh_token(connection_id)
-                new_tokens = self._refresh_token(connection_id, refresh_token)
+                new_tokens = self._refresh_token(connection_id, refresh_token, effective_erp_type)
                 if new_tokens:
                     return new_tokens["access_token"]
         
         # Refresh token expirado ou inválido - precisa reautenticar via Selenium
-        print(f"🔄 Refresh token expirado para conexão {connection_id}. Iniciando reautenticação...")
-        new_tokens = self.oauth_flow.authenticate_connection(connection_id, erp_type)
+        print(f"🔄 Refresh token expirado para conexão {connection_id}. Iniciando reautenticação ({effective_erp_type})...")
+        new_tokens = self.oauth_flow.authenticate_connection(connection_id, effective_erp_type)
         return new_tokens["access_token"]
     
-    def _refresh_token(self, connection_id: str, refresh_token: str) -> Optional[Dict[str, Any]]:
+    def _refresh_token(self, connection_id: str, refresh_token: str, erp_type: str) -> Optional[Dict[str, Any]]:
         """
         Renova o access_token usando o refresh_token.
         Busca credenciais OAuth do banco de dados.
@@ -85,21 +88,41 @@ class TokenManager:
             "grant_type": "refresh_token",
             "client_id": oauth_creds["client_id"],
             "client_secret": oauth_creds["client_secret"],
-            "refresh_token": refresh_token
+            "refresh_token": refresh_token,
         }
         
+        # Seleciona endpoint de token conforme ERP
+        if erp_type == "tiny":
+            token_url = TINY_TOKEN_URL
+        elif erp_type == "contaazul":
+            token_url = CONTAZUL_TOKEN_URL
+        else:
+            raise ValueError(f"ERP não suportado para refresh de token: {erp_type}")
+        
+        if not token_url:
+            raise ValueError(f"URL de token não configurada para o ERP {erp_type}")
+        
         try:
-            response = requests.post(TINY_TOKEN_URL, data=payload)
+            response = requests.post(token_url, data=payload)
             response.raise_for_status()
             
             tokens = response.json()
-            # Tokens são criptografados automaticamente pelo update_erp_tokens
+            # Tokens são criptografados automaticamente pelo update_erp_tokens.
+            # Para Conta Azul, o refresh_token segue uma janela deslizante de 30 dias:
+            # a cada refresh empurramos o refresh_expires_at para agora + 30 dias,
+            # evitando reautenticação enquanto houver uso periódico.
+            expires_in = tokens.get("expires_in", 14400)
+            if erp_type == "contaazul":
+                refresh_expires_in = 30 * 24 * 3600  # 30 dias em segundos
+            else:
+                refresh_expires_in = tokens.get("refresh_expires_in", 86400)
+
             self.db.update_erp_tokens(
                 connection_id=connection_id,
                 access_token=tokens["access_token"],
                 refresh_token=tokens["refresh_token"],
-                expires_in=tokens.get("expires_in", 14400),
-                refresh_expires_in=tokens.get("refresh_expires_in", 86400)
+                expires_in=expires_in,
+                refresh_expires_in=refresh_expires_in,
             )
             
             print(f"✅ Token renovado com sucesso para conexão {connection_id}")

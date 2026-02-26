@@ -133,7 +133,7 @@ python scripts/onboarding.py \
 **Parâmetros:**
 - `nome`: Nome da empresa
 - `cnpj`: CNPJ da empresa (apenas números)
-- `erp_type`: Tipo do ERP (`tiny`, `bling`, `omie`)
+- `erp_type`: Tipo do ERP (`tiny`, `bling`, `omie`, `contaazul`)
 - `erp_login`: Login do usuário no ERP
 - `erp_password`: Senha do usuário no ERP
 - `client_id`: Client ID da aplicação OAuth registrada no ERP
@@ -191,11 +191,18 @@ Para rodar sincronização em background, com **requisições incrementais** (ap
 # Worker para fila Tiny (sync vendas e estoque)
 celery -A tasks worker --queues=tiny --concurrency=2
 
+# Worker para fila Conta Azul
+celery -A tasks worker --queues=contaazul --concurrency=2
+
 # Scheduler: enfileira todas as empresas a cada 30 min
 celery -A tasks beat --loglevel=info
 ```
 
-O scheduler chama `dispatch_all`, que enfileira uma tarefa por (empresa, ERP, tipo). As tarefas usam `get_sync_start()` para definir o período da API: primeira vez = últimos 30 dias; depois = desde o último checkpoint.
+O scheduler chama `dispatch_all`, que enfileira uma tarefa por (empresa, ERP, tipo). Atualmente são suportados os ERPs **Tiny** e **Conta Azul**. As tarefas usam `get_sync_start()` para definir o período da API: primeira vez = últimos 30 dias; depois = desde o último checkpoint.
+
+### Integração Conta Azul
+
+A integração com o **Conta Azul** segue o mesmo padrão do Tiny: staging (`contaazul_sales`, `contaazul_sale_items`, `contaazul_stock`), OAuth2 com credenciais por empresa no banco e renovação automática de token. As URLs da API e de autenticação do Conta Azul estão definidas em código em `src/config/settings.py` (não no `.env`). Para onboarding de uma empresa com Conta Azul, use `erp_type=contaazul` e as credenciais OAuth da aplicação Conta Azul (client_id, client_secret, redirect_uri). O sync manual (`sync_company.py`) e o Celery (filas `sync_contaazul_sales`, `sync_contaazul_stock`) funcionam da mesma forma que para o Tiny.
 
 ## 🔐 Autenticação e Segurança
 
@@ -251,8 +258,8 @@ O sistema utiliza três schemas no Supabase:
   - `erp_connections` — Conexões ERP com credenciais criptografadas
 
 - **`staging`**: Dados brutos das APIs (antes da normalização)
-  - `tiny_sales` — Vendas brutas do Tiny
-  - `tiny_stock` — Estoque bruto do Tiny
+  - `tiny_sales`, `tiny_sale_items`, `tiny_stock` — Tiny
+  - `contaazul_sales`, `contaazul_sale_items`, `contaazul_stock` — Conta Azul
 
 - **`core`**: Dados normalizados prontos para consumo
   - `customers` — Clientes normalizados

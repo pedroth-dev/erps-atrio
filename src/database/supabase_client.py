@@ -50,6 +50,18 @@ class SupabaseClient:
         """Tabela tiny_sale_items no schema staging."""
         return self.client.schema(SCHEMA_STAGING).table("tiny_sale_items")
 
+    def _contaazul_sales(self):
+        """Tabela contaazul_sales no schema staging."""
+        return self.client.schema(SCHEMA_STAGING).table("contaazul_sales")
+
+    def _contaazul_stock(self):
+        """Tabela contaazul_stock no schema staging."""
+        return self.client.schema(SCHEMA_STAGING).table("contaazul_stock")
+
+    def _contaazul_sale_items(self):
+        """Tabela contaazul_sale_items no schema staging."""
+        return self.client.schema(SCHEMA_STAGING).table("contaazul_sale_items")
+
     def _customers(self):
         """Tabela customers no schema core."""
         return self.client.schema(SCHEMA_CORE).table("customers")
@@ -359,11 +371,16 @@ class SupabaseClient:
         self._tiny_sales().upsert(data, on_conflict="company_id,sale_external_id").execute()
 
     def insert_staging_sales_batch(
-        self, company_id: str, raw_data_list: List[Dict[str, Any]], fetched_at: datetime
+        self,
+        company_id: str,
+        raw_data_list: List[Dict[str, Any]],
+        fetched_at: datetime,
+        erp_type: str = "tiny",
     ) -> int:
         """Insere ou atualiza vendas no staging em lote (upsert por company_id + sale_external_id). Evita duplicatas."""
         if not raw_data_list:
             return 0
+        table = self._contaazul_sales() if erp_type == "contaazul" else self._tiny_sales()
         fetched_at_str = fetched_at.isoformat()
         rows = []
         for item in raw_data_list:
@@ -374,18 +391,19 @@ class SupabaseClient:
                 "raw_data": item,
                 "fetched_at": fetched_at_str,
             })
-        self._tiny_sales().upsert(rows, on_conflict="company_id,sale_external_id").execute()
-        logging.getLogger(__name__).debug("staging: %d vendas (upsert)", len(rows))
+        table.upsert(rows, on_conflict="company_id,sale_external_id").execute()
+        logging.getLogger(__name__).debug("staging: %d vendas (upsert) [%s]", len(rows), erp_type)
         return len(rows)
     
     @staticmethod
     def _stock_product_external_id_from_raw(raw_data: Dict[str, Any]) -> str:
-        """Extrai o ID do produto do payload GET /estoque/{id} (campo 'id')."""
+        """Extrai o ID do produto do payload (Tiny: GET /estoque/{id}; Conta Azul: item de GET /v1/produtos)."""
         pid = raw_data.get("id")
         return str(pid) if pid is not None else ""
 
-    def insert_staging_stock(self, company_id: str, raw_data: Dict[str, Any], fetched_at: datetime):
+    def insert_staging_stock(self, company_id: str, raw_data: Dict[str, Any], fetched_at: datetime, erp_type: str = "tiny"):
         """Insere ou atualiza um registro de estoque no staging (upsert por company_id + product_external_id)."""
+        table = self._contaazul_stock() if erp_type == "contaazul" else self._tiny_stock()
         product_external_id = self._stock_product_external_id_from_raw(raw_data)
         data = {
             "company_id": company_id,
@@ -393,14 +411,19 @@ class SupabaseClient:
             "raw_data": raw_data,
             "fetched_at": fetched_at.isoformat(),
         }
-        self._tiny_stock().upsert(data, on_conflict="company_id,product_external_id").execute()
+        table.upsert(data, on_conflict="company_id,product_external_id").execute()
 
     def insert_staging_stock_batch(
-        self, company_id: str, raw_data_list: List[Dict[str, Any]], fetched_at: datetime
+        self,
+        company_id: str,
+        raw_data_list: List[Dict[str, Any]],
+        fetched_at: datetime,
+        erp_type: str = "tiny",
     ) -> int:
         """Insere ou atualiza registros de estoque no staging (upsert por company_id + product_external_id). Evita duplicatas."""
         if not raw_data_list:
             return 0
+        table = self._contaazul_stock() if erp_type == "contaazul" else self._tiny_stock()
         fetched_at_str = fetched_at.isoformat()
         rows = []
         for item in raw_data_list:
@@ -411,15 +434,17 @@ class SupabaseClient:
                 "raw_data": item,
                 "fetched_at": fetched_at_str,
             })
-        self._tiny_stock().upsert(rows, on_conflict="company_id,product_external_id").execute()
-        logging.getLogger(__name__).debug("staging: %d estoque (upsert)", len(rows))
+        table.upsert(rows, on_conflict="company_id,product_external_id").execute()
+        logging.getLogger(__name__).debug("staging: %d estoque (upsert) [%s]", len(rows), erp_type)
         return len(rows)
     
-    def get_pending_staging_sales(self, company_id: str, limit: int = 100) -> List[Dict[str, Any]]:
+    def get_pending_staging_sales(
+        self, company_id: str, limit: int = 100, erp_type: str = "tiny"
+    ) -> List[Dict[str, Any]]:
         """Busca vendas pendentes de processamento no staging."""
+        table = self._contaazul_sales() if erp_type == "contaazul" else self._tiny_sales()
         result = (
-            self._tiny_sales()
-            .select("*")
+            table.select("*")
             .eq("company_id", company_id)
             .is_("processed_at", "null")
             .limit(limit)
@@ -428,57 +453,44 @@ class SupabaseClient:
         return result.data
 
     def get_staging_sale_ids_by_external_ids(
-        self, company_id: str, external_ids: List[str]
+        self, company_id: str, external_ids: List[str], erp_type: str = "tiny"
     ) -> Dict[str, str]:
         """
-        Busca os IDs (UUID) dos registros em staging.tiny_sales a partir dos external_ids.
+        Busca os IDs (UUID) dos registros em staging (tiny_sales ou contaazul_sales) a partir dos external_ids.
         Retorna um dicionário: external_id -> staging_id (UUID).
-        
-        Nota: Como external_id está dentro do JSONB raw_data, busca todos os registros
-        da empresa e filtra em Python. Para grandes volumes, considere criar uma função SQL.
         """
         if not external_ids:
             return {}
-        
-        # Converte para set para busca O(1)
+        table = self._contaazul_sales() if erp_type == "contaazul" else self._tiny_sales()
         external_ids_set = set(str(eid) for eid in external_ids)
         result_map = {}
-        
-        # Busca todos os registros da empresa (apenas id e raw_data para otimizar)
-        # Em produção com muitos registros, considere paginar ou criar índice/função SQL
-        result = (
-            self._tiny_sales()
-            .select("id, raw_data")
-            .eq("company_id", company_id)
-            .execute()
-        )
-        
+        result = table.select("id, raw_data").eq("company_id", company_id).execute()
         for row in result.data:
             raw_data = row.get("raw_data") or {}
-            # Tenta extrair external_id do raw_data (mesma lógica do normalizer)
             ext_id = str(
-                raw_data.get("id") 
-                or raw_data.get("idPedido") 
-                or raw_data.get("numero") 
+                raw_data.get("id")
+                or raw_data.get("idPedido")
+                or raw_data.get("numero")
                 or ""
             )
             if ext_id in external_ids_set:
                 result_map[ext_id] = row["id"]
-        
         return result_map
     
-    def get_pending_staging_stock(self, company_id: str, limit: int = 100) -> List[Dict[str, Any]]:
+    def get_pending_staging_stock(
+        self, company_id: str, limit: int = 100, erp_type: str = "tiny"
+    ) -> List[Dict[str, Any]]:
         """Busca estoque pendente de processamento no staging."""
+        table = self._contaazul_stock() if erp_type == "contaazul" else self._tiny_stock()
         result = (
-            self._tiny_stock()
-            .select("*")
+            table.select("*")
             .eq("company_id", company_id)
             .is_("processed_at", "null")
             .limit(limit)
             .execute()
         )
         return result.data
-    
+
     def mark_staging_processed(self, table_name: str, record_id: str, error: Optional[str] = None):
         """Marca um registro do staging como processado (schema staging)."""
         data = {"processed_at": datetime.utcnow().isoformat()}
@@ -491,15 +503,25 @@ class SupabaseClient:
             self._tiny_stock().update(data).eq("id", record_id).execute()
         elif table_name == "tiny_sale_items":
             self._tiny_sale_items().update(data).eq("id", record_id).execute()
+        elif table_name == "contaazul_sales":
+            self._contaazul_sales().update(data).eq("id", record_id).execute()
+        elif table_name == "contaazul_stock":
+            self._contaazul_stock().update(data).eq("id", record_id).execute()
+        elif table_name == "contaazul_sale_items":
+            self._contaazul_sale_items().update(data).eq("id", record_id).execute()
 
     @staticmethod
     def _product_external_id_from_item(item: Dict[str, Any]) -> str:
-        """Extrai o ID do produto no ERP a partir do item (raw_data do item)."""
+        """
+        Extrai o ID do produto no ERP a partir do item (raw_data do item).
+        Tiny:   item['produto']['id'].
+        Conta Azul (GET /v1/venda/{id}/itens): usa id_item (id do produto) ou, em último caso, id do item.
+        """
         produto = item.get("produto") or item.get("product") or {}
         if isinstance(produto, dict):
             pid = produto.get("id")
         else:
-            pid = item.get("product_id") or item.get("id")
+            pid = item.get("product_id") or item.get("id_item") or item.get("id")
         return str(pid) if pid is not None else ""
 
     def insert_staging_sale_items_batch(
@@ -509,6 +531,7 @@ class SupabaseClient:
         sale_staging_id: Optional[str],
         items: List[Dict[str, Any]],
         fetched_at: datetime,
+        erp_type: str = "tiny",
     ) -> int:
         """
         Insere ou atualiza itens de uma venda no staging (upsert por company_id + sale_external_id + product_external_id).
@@ -551,10 +574,9 @@ class SupabaseClient:
                 "raw_data": raw_data,
                 "fetched_at": fetched_at_str,
             })
-        self._tiny_sale_items().upsert(
-            rows, on_conflict="company_id,sale_external_id,product_external_id"
-        ).execute()
-        logging.getLogger(__name__).debug("staging: %d itens de venda %s (upsert)", len(rows), sale_external_id)
+        table = self._contaazul_sale_items() if erp_type == "contaazul" else self._tiny_sale_items()
+        table.upsert(rows, on_conflict="company_id,sale_external_id,product_external_id").execute()
+        logging.getLogger(__name__).debug("staging: %d itens de venda %s (upsert) [%s]", len(rows), sale_external_id, erp_type)
         return len(rows)
 
     def get_pending_staging_sale_items(
@@ -562,6 +584,7 @@ class SupabaseClient:
         company_id: str,
         limit: int = 100,
         sale_external_ids: Optional[List[str]] = None,
+        erp_type: str = "tiny",
     ) -> List[Dict[str, Any]]:
         """
         Busca itens de vendas pendentes de processamento no staging.
@@ -569,9 +592,9 @@ class SupabaseClient:
         """
         if sale_external_ids is not None and len(sale_external_ids) == 0:
             return []
+        table = self._contaazul_sale_items() if erp_type == "contaazul" else self._tiny_sale_items()
         q = (
-            self._tiny_sale_items()
-            .select("*")
+            table.select("*")
             .eq("company_id", company_id)
             .is_("processed_at", "null")
             .limit(limit)
@@ -582,15 +605,16 @@ class SupabaseClient:
         return result.data
 
     def mark_staging_sale_items_processed_batch(
-        self, record_ids: List[str], error: Optional[str] = None
+        self, record_ids: List[str], error: Optional[str] = None, erp_type: str = "tiny"
     ) -> None:
         """Marca vários itens de staging como processados de uma vez."""
         if not record_ids:
             return
+        table = self._contaazul_sale_items() if erp_type == "contaazul" else self._tiny_sale_items()
         data = {"processed_at": datetime.utcnow().isoformat()}
         if error:
             data["process_error"] = error
-        self._tiny_sale_items().update(data).in_("id", record_ids).execute()
+        table.update(data).in_("id", record_ids).execute()
 
     def get_sale_id_by_external_id(
         self, company_id: str, erp_type: str, sale_external_id: str
@@ -772,23 +796,29 @@ class SupabaseClient:
         ]
         self._core_sales().upsert(data, on_conflict="company_id,erp_type,external_id").execute()
 
-    def mark_staging_sales_processed_batch(self, record_ids: List[str], error: Optional[str] = None) -> None:
-        """Marca vários registros de staging.tiny_sales como processados de uma vez."""
+    def mark_staging_sales_processed_batch(
+        self, record_ids: List[str], error: Optional[str] = None, erp_type: str = "tiny"
+    ) -> None:
+        """Marca vários registros de staging (tiny_sales ou contaazul_sales) como processados de uma vez."""
         if not record_ids:
             return
+        table = self._contaazul_sales() if erp_type == "contaazul" else self._tiny_sales()
         data = {"processed_at": datetime.utcnow().isoformat()}
         if error:
             data["process_error"] = error
-        self._tiny_sales().update(data).in_("id", record_ids).execute()
+        table.update(data).in_("id", record_ids).execute()
 
-    def mark_staging_stock_processed_batch(self, record_ids: List[str], error: Optional[str] = None) -> None:
-        """Marca vários registros de staging.tiny_stock como processados de uma vez."""
+    def mark_staging_stock_processed_batch(
+        self, record_ids: List[str], error: Optional[str] = None, erp_type: str = "tiny"
+    ) -> None:
+        """Marca vários registros de staging (tiny_stock ou contaazul_stock) como processados de uma vez."""
         if not record_ids:
             return
+        table = self._contaazul_stock() if erp_type == "contaazul" else self._tiny_stock()
         data = {"processed_at": datetime.utcnow().isoformat()}
         if error:
             data["process_error"] = error
-        self._tiny_stock().update(data).in_("id", record_ids).execute()
+        table.update(data).in_("id", record_ids).execute()
 
     def upsert_core_sale_items_batch(
         self, company_id: str, erp_type: str, rows: List[Dict[str, Any]]

@@ -18,6 +18,7 @@ task_queues = (
     Queue("tiny"),
     Queue("bling"),
     Queue("omie"),
+    Queue("contaazul"),
 )
 task_default_queue = "default"
 

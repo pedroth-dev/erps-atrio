@@ -1,5 +1,5 @@
 """
-Sincronização de vendas do Tiny para o Supabase.
+Sincronização de vendas (Tiny e Conta Azul) para o Supabase.
 Coleta dados da API e insere no staging em lotes.
 """
 import logging
@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from src.database.supabase_client import SupabaseClient
 from src.auth.token_manager import TokenManager
 from src.integrations.tiny_client import TinyClient
+from src.integrations.contaazul_client import ContaAzulClient
 from src.sync.checkpoints import update_checkpoint
 
 logger = logging.getLogger(__name__)
@@ -54,16 +55,19 @@ class SalesSync:
         if not connection or not connection.get("is_active"):
             raise ValueError(f"Conexão {connection_id} não está ativa")
         erp_type = erp_type or connection.get("erp_type") or "tiny"
-        
+
         # Obtém token válido (passa pelo token_manager conforme doc)
-        access_token = self.token_manager.get_valid_token(connection_id)
-        
-        # Cria cliente Tiny
-        tiny_client = TinyClient(access_token)
-        
+        access_token = self.token_manager.get_valid_token(connection_id, erp_type=erp_type)
+
+        # Cliente de API conforme ERP
+        if erp_type == "contaazul":
+            api_client = ContaAzulClient(access_token)
+        else:
+            api_client = TinyClient(access_token)
+
         # Busca vendas
-        sales = tiny_client.fetch_sales(data_inicial, data_final)
-        
+        sales = api_client.fetch_sales(data_inicial, data_final)
+
         if not sales:
             print("⚠️  Nenhuma venda encontrada")
             return 0
@@ -80,7 +84,7 @@ class SalesSync:
             batch = sales[i : i + STAGING_BATCH_SIZE]
             batch_num = (i // STAGING_BATCH_SIZE) + 1
             try:
-                n = self.db.insert_staging_sales_batch(company_id, batch, fetched_at)
+                n = self.db.insert_staging_sales_batch(company_id, batch, fetched_at, erp_type=erp_type)
                 inserted_count += n
                 print(f"   [{batch_num}/{num_batches}] {n} vendas ✓")
             except Exception as e:

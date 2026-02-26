@@ -47,7 +47,11 @@ Se qualquer argumento for trocado de posição (ex.: 6º e 7º), a coluna errada
 ## Exemplo de chamada
 
 ```bash
+# Tiny
 python scripts/onboarding.py "Nome" "CNPJ" tiny "login" "senha" "client_id" "client_secret" "https://..../redirect"
+
+# Conta Azul
+python scripts/onboarding.py "Nome" "CNPJ" contaazul "login" "senha" "client_id" "client_secret" "https://..../redirect"
 ```
 
 Consulte `scripts/onboarding.py` e `src/database/supabase_client.py` (métodos `create_erp_connection` e `update_erp_tokens`) para detalhes do código.

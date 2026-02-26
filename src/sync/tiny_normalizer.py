@@ -27,7 +27,7 @@ def _parse_tiny_date(value: Any) -> Optional[str]:
     return None
 
 
-# Mapeamento de situação Tiny (número) para status texto (core.sales)
+# Mapeamento de situação Tiny (número) para status texto (legível)
 TINY_SITUACAO_MAP = {
     8: "Dados Incompletos",
     0: "Aberta",
@@ -39,6 +39,21 @@ TINY_SITUACAO_MAP = {
     6: "Entregue",
     2: "Cancelada",
     9: "Nao Entregue",
+}
+
+# Mapeamento unificado de status Tiny → status canônico do core
+# (para todos os ERPs: pending / paid / canceled / refused)
+TINY_STATUS_UNIFIED_MAP = {
+    "Aberta": "pending",
+    "Faturada": "paid",
+    "Cancelada": "canceled",
+    "Aprovada": "paid",
+    "Preparando Envio": "paid",
+    "Enviada": "paid",
+    "Entregue": "paid",
+    "Pronto Envio": "paid",
+    "Dados Incompletos": "paid",
+    "Nao Entregue": "canceled",
 }
 
 
@@ -145,7 +160,8 @@ def tiny_raw_to_sale(raw: Dict[str, Any], customer_id: Optional[str]) -> Dict[st
     if situacao_raw is None:
         situacao_raw = raw.get("status")
     raw_campos = {"situacao": raw.get("situacao"), "situacaoPedido": raw.get("situacaoPedido"), "status": raw.get("status")}
-    status = _map_tiny_situacao(situacao_raw, raw_values=raw_campos)
+    status_text = _map_tiny_situacao(situacao_raw, raw_values=raw_campos)
+    status = TINY_STATUS_UNIFIED_MAP.get(status_text, "pending")
 
     return {
         "external_id": str(external_id),

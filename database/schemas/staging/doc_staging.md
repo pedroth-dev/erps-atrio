@@ -14,10 +14,13 @@ A decisão de ter um staging separado do `core` traz três vantagens principais:
 - **Rastreabilidade** — você consegue comparar o dado bruto com o que foi normalizado para o `core`, facilitando depuração.
 - **Separação de responsabilidades** — o script Python que coleta dados da API não precisa saber nada sobre a estrutura do `core`. Ele só insere o raw e segue em frente.
 
-Atualmente o staging contém tabelas para o ERP **Tiny**:
-- `tiny_sales` — vendas (pedidos)
-- `tiny_stock` — estoque de produtos
-- `tiny_sale_items` — itens de vendas (produtos vendidos em cada pedido)
+Atualmente o staging contém tabelas para o ERP **Tiny** e para o **Conta Azul**:
+- `tiny_sales` — vendas (pedidos) do Tiny
+- `tiny_stock` — estoque de produtos do Tiny
+- `tiny_sale_items` — itens de vendas do Tiny (produtos vendidos em cada pedido)
+- `contaazul_sales` — vendas (pedidos) do Conta Azul
+- `contaazul_stock` — estoque de produtos do Conta Azul
+- `contaazul_sale_items` — itens de vendas do Conta Azul (produtos vendidos em cada venda)
 
 Conforme novos ERPs forem integrados, novas tabelas serão adicionadas aqui seguindo o mesmo padrão.
 
@@ -125,13 +128,80 @@ Registros com `processed_at = NULL` estão pendentes de normalização. Registro
 
 ---
 
+## staging_contaazul_sales.sql
+
+**O que faz:** Cria a tabela `staging.contaazul_sales`, que armazena os payloads brutos dos endpoints de vendas do Conta Azul (por exemplo, `GET /v1/venda/busca` e `GET /v1/venda/{id}` em `https://api-v2.contaazul.com`).
+
+**Quando executar:** Após as tabelas de staging do Tiny (`staging_tiny_sales.sql`, `staging_tiny_stock.sql`, `staging_tiny_sale_items.sql`), com o schema `staging` já existente.
+
+**Como usar:** O script Python de coleta para o Conta Azul insere um registro aqui a cada venda retornada pela API, com o payload completo no campo `raw_data`. O script de normalização lê os registros onde `processed_at IS NULL`, extrai os campos necessários e os envia para `core.customers` e `core.sales`, exatamente como já é feito para o Tiny, diferenciando apenas pelo `erp_type`.
+
+**Campos importantes:**
+- `sale_external_id` — identificador da venda no Conta Azul (ID retornado pela API).
+- `raw_data` — payload completo retornado pela API do Conta Azul, em formato JSONB.
+- `processed_at` — nulo enquanto o registro não foi normalizado para o `core`.
+- `process_error` — mensagem de erro quando a normalização falha.
+- `fetched_at` — momento exato em que o dado foi coletado da API.
+
+**Índice parcial:** A tabela possui um índice `WHERE processed_at IS NULL` que indexa apenas registros pendentes, garantindo consultas rápidas mesmo com grande volume histórico.
+
+As mesmas regras de boas práticas da `staging.tiny_sales` se aplicam aqui: não deletar histórico, não alterar `raw_data` e tratar registros com `process_error`.
+
+---
+
+## staging_contaazul_stock.sql
+
+**O que faz:** Cria a tabela `staging.contaazul_stock`, que armazena os payloads brutos relacionados a estoque de produtos do Conta Azul (por exemplo, consultas de produtos com campos de saldo/estoque).
+
+**Quando executar:** Após a criação da `staging.contaazul_sales.sql`, com o schema `staging` já existente.
+
+**Como usar:** Segue o mesmo padrão da `tiny_stock`. O script Python de coleta obtém a lista de produtos e seus dados de estoque via API do Conta Azul e insere o payload bruto aqui. O script de normalização processa os registros pendentes e faz upsert em `core.stock`, diferenciando registros por `erp_type`.
+
+**Campos importantes:**
+- `product_external_id` — identificador do produto no Conta Azul.
+- `raw_data` — payload completo retornado pela API (incluindo informações de estoque).
+- `processed_at` / `process_error` / `fetched_at` — mesmo significado das tabelas Tiny.
+
+**Índice parcial:** Índice `WHERE processed_at IS NULL` para consultas eficientes de registros pendentes.
+
+As mesmas recomendações da `staging.tiny_stock` se aplicam: não deletar histórico, não alterar `raw_data` e sempre investigar registros com `process_error`.
+
+---
+
+## staging_contaazul_sale_items.sql
+
+**O que faz:** Cria a tabela `staging.contaazul_sale_items`, que armazena os itens (produtos/serviços vendidos) de cada venda do Conta Azul, coletados via endpoints de detalhes/itens da venda (como `GET /v1/venda/{id_venda}/itens`).
+
+**Quando executar:** Após a `staging_contaazul_sales.sql` e `staging_contaazul_stock.sql`, com o schema `staging` já criado.
+
+**Como usar:** O fluxo é idêntico ao do Tiny:
+
+1. Vendas do Conta Azul são normalizadas primeiro (`staging.contaazul_sales` → `core.sales`).
+2. Um collector lê as vendas já normalizadas em `core.sales` (`erp_type='contaazul'`) e, para cada uma, chama a API de detalhes/itens.
+3. Cada item retornado é inserido aqui como um registro separado, com o payload completo no `raw_data`.
+4. Um normalizer específico transforma esses itens em registros da `core.sale_items`.
+
+**Campos importantes:**
+- `sale_external_id` — ID da venda no Conta Azul.
+- `product_external_id` — ID do produto no Conta Azul.
+- `sale_staging_id` — FK opcional para `staging.contaazul_sales.id`.
+- `raw_data` — payload completo do item (produto, quantidade, valores, etc.).
+- `processed_at` / `process_error` / `fetched_at` — mesmos significados das tabelas Tiny.
+
+Assim como na tabela de itens do Tiny, existe um índice parcial para pendências e as mesmas regras de não deletar/alterar `raw_data` se aplicam.
+
+---
+
 ## Ordem de Execução
 
-| Ordem | Arquivo                          |
-|-------|----------------------------------|
-| 6º    | staging_tiny_sales.sql |
-| 7º    | staging_tiny_stock.sql |
-| 8º    | staging_tiny_sale_items.sql |
+| Ordem | Arquivo                              |
+|-------|--------------------------------------|
+| 6º    | staging_tiny_sales.sql               |
+| 7º    | staging_tiny_stock.sql               |
+| 8º    | staging_tiny_sale_items.sql          |
+| 9º    | staging_contaazul_sales.sql          |
+| 10º   | staging_contaazul_stock.sql          |
+| 11º   | staging_contaazul_sale_items.sql     |
 
 Os arquivos do staging dependem do schema `auth_integrations` estar completamente criado (arquivos 01 a 05) antes de serem executados.
 

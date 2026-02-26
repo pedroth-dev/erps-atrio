@@ -25,6 +25,9 @@ schemas/
 │   ├── add_product_external_id_tiny_stock.sql   # Migração (se tabela já existir)
 │   ├── staging_tiny_sale_items.sql
 │   ├── add_product_external_id_tiny_sale_items.sql  # Migração (se tabela já existir)
+│   ├── staging_contaazul_sales.sql
+│   ├── staging_contaazul_stock.sql
+│   ├── staging_contaazul_sale_items.sql
 │   └── doc_staging.md
 │
 └── core/                          # Schema de dados normalizados
@@ -52,10 +55,13 @@ Execute os arquivos SQL na seguinte ordem:
 11. `staging/add_product_external_id_tiny_stock.sql` - (apenas se a tabela tiny_stock já existir sem a coluna product_external_id)
 12. `staging/staging_tiny_sale_items.sql` - Itens de vendas (produtos vendidos)
 13. `staging/add_product_external_id_tiny_sale_items.sql` - (apenas se a tabela tiny_sale_items já existir sem a coluna product_external_id)
-14. `core/table_customers.sql`
-15. `core/table_sales.sql`
-16. `core/table_sale_items.sql` - Itens de vendas normalizados
-17. `core/table_stock.sql`
+14. `staging/staging_contaazul_sales.sql`
+15. `staging/staging_contaazul_stock.sql`
+16. `staging/staging_contaazul_sale_items.sql`
+17. `core/table_customers.sql`
+18. `core/table_sales.sql`
+19. `core/table_sale_items.sql` - Itens de vendas normalizados
+20. `core/table_stock.sql`
 
 ## 📚 Documentação
 

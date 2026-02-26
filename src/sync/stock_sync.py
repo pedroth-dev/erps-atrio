@@ -1,7 +1,7 @@
 """
-Sincronização de estoque do Tiny para o Supabase.
-1) Lista produtos (full: todos ativos; incremental: por dataAlteracao).
-2) Para cada produto, obtém GET /estoque/{idProduto} e grava no staging.
+Sincronização de estoque (Tiny e Conta Azul) para o Supabase.
+Tiny: lista produtos e GET /estoque/{id} por produto.
+Conta Azul: lista produtos (GET /v1/produtos) e cada item já traz saldo; grava no staging.
 """
 import logging
 import time
@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from src.database.supabase_client import SupabaseClient
 from src.auth.token_manager import TokenManager
 from src.integrations.tiny_client import TinyClient
+from src.integrations.contaazul_client import ContaAzulClient
 from src.sync.checkpoints import get_sync_start, update_checkpoint
 
 logger = logging.getLogger(__name__)
@@ -59,60 +60,81 @@ class StockSync:
         else:
             print(f"   Modo: incremental (produtos alterados desde {data_inicial})")
 
-        access_token = self.token_manager.get_valid_token(connection_id)
-        tiny_client = TinyClient(access_token)
+        access_token = self.token_manager.get_valid_token(connection_id, erp_type=erp_type)
 
-        # 1) Listar produtos: ativos; em incremental filtrar por dataAlteracao
-        if is_full_refresh:
-            products = tiny_client.fetch_products(situacao="A")
-        else:
-            # API espera "YYYY-MM-DD HH:MM:SS"
-            data_alteracao = f"{data_inicial} 00:00:00"
-            products = tiny_client.fetch_products(
-                situacao="A", data_alteracao=data_alteracao
-            )
-
-        if not products:
-            print("⚠️  Nenhum produto encontrado para atualizar estoque")
-            self.db.update_last_sync(connection_id)
-            update_checkpoint(
-                self.db, company_id, erp_type, "stock", set_full_refresh=is_full_refresh
-            )
-            return 0
-
-        # 2) Para cada produto, GET /estoque/{id} e acumular payloads
-        product_ids = []
-        for p in products:
-            pid = p.get("id")
-            if pid is not None:
-                product_ids.append(int(pid) if not isinstance(pid, int) else pid)
-
-        if not product_ids:
-            print("⚠️  Nenhum ID de produto válido")
-            self.db.update_last_sync(connection_id)
-            update_checkpoint(
-                self.db, company_id, erp_type, "stock", set_full_refresh=is_full_refresh
-            )
-            return 0
-
-        print(f"📥 Buscando estoque de {len(product_ids)} produto(s)...")
-        stock_payloads: List[Dict[str, Any]] = []
-        errors = 0
-        t_start = time.perf_counter()
-        for i, pid in enumerate(product_ids):
-            payload = tiny_client.fetch_product_stock(pid)
-            if payload is not None:
-                stock_payloads.append(payload)
+        if erp_type == "contaazul":
+            # Conta Azul: GET /v1/produtos retorna itens com id, codigo, nome, saldo; cada item = 1 registro de staging
+            api_client = ContaAzulClient(access_token)
+            if is_full_refresh:
+                products = api_client.fetch_products(status="ATIVO")
             else:
-                errors += 1
-            if (i + 1) % 50 == 0:
-                print(f"   → {i + 1}/{len(product_ids)} estoques consultados...")
-            time.sleep(STOCK_REQUEST_DELAY_S)
+                # data_alteracao em ISO (ex: 2025-01-01T00:00:00)
+                data_alteracao_de = f"{data_inicial}T00:00:00"
+                data_alteracao_ate = f"{data_final}T23:59:59"
+                products = api_client.fetch_products(
+                    data_alteracao_de=data_alteracao_de,
+                    data_alteracao_ate=data_alteracao_ate,
+                    status="ATIVO",
+                )
+            stock_payloads = products
+        else:
+            # Tiny: listar produtos e depois GET /estoque/{id} por produto
+            tiny_client = TinyClient(access_token)
+            if is_full_refresh:
+                products = tiny_client.fetch_products(situacao="A")
+            else:
+                data_alteracao = f"{data_inicial} 00:00:00"
+                products = tiny_client.fetch_products(
+                    situacao="A", data_alteracao=data_alteracao
+                )
 
-        elapsed = time.perf_counter() - t_start
-        print(f"   → {len(stock_payloads)} estoques obtidos em {elapsed:.1f}s" + (f" ({errors} falhas)" if errors else ""))
+            if not products:
+                print("⚠️  Nenhum produto encontrado para atualizar estoque")
+                self.db.update_last_sync(connection_id)
+                update_checkpoint(
+                    self.db, company_id, erp_type, "stock", set_full_refresh=is_full_refresh
+                )
+                return 0
 
-        # 3) Inserir no staging em lotes (cada item = resposta GET /estoque/{id})
+            product_ids = []
+            for p in products:
+                pid = p.get("id")
+                if pid is not None:
+                    product_ids.append(int(pid) if not isinstance(pid, int) else pid)
+
+            if not product_ids:
+                print("⚠️  Nenhum ID de produto válido")
+                self.db.update_last_sync(connection_id)
+                update_checkpoint(
+                    self.db, company_id, erp_type, "stock", set_full_refresh=is_full_refresh
+                )
+                return 0
+
+            print(f"📥 Buscando estoque de {len(product_ids)} produto(s)...")
+            stock_payloads = []
+            errors = 0
+            t_start = time.perf_counter()
+            for i, pid in enumerate(product_ids):
+                payload = tiny_client.fetch_product_stock(pid)
+                if payload is not None:
+                    stock_payloads.append(payload)
+                else:
+                    errors += 1
+                if (i + 1) % 50 == 0:
+                    print(f"   → {i + 1}/{len(product_ids)} estoques consultados...")
+                time.sleep(STOCK_REQUEST_DELAY_S)
+            elapsed = time.perf_counter() - t_start
+            print(f"   → {len(stock_payloads)} estoques obtidos em {elapsed:.1f}s" + (f" ({errors} falhas)" if errors else ""))
+
+        if not stock_payloads:
+            print("⚠️  Nenhum registro de estoque para inserir")
+            self.db.update_last_sync(connection_id)
+            update_checkpoint(
+                self.db, company_id, erp_type, "stock", set_full_refresh=is_full_refresh
+            )
+            return 0
+
+        # Inserir no staging em lotes
         fetched_at = datetime.now(timezone.utc)
         total = len(stock_payloads)
         inserted_count = 0
@@ -122,7 +144,7 @@ class StockSync:
             batch = stock_payloads[i : i + STAGING_BATCH_SIZE]
             batch_num = (i // STAGING_BATCH_SIZE) + 1
             try:
-                n = self.db.insert_staging_stock_batch(company_id, batch, fetched_at)
+                n = self.db.insert_staging_stock_batch(company_id, batch, fetched_at, erp_type=erp_type)
                 inserted_count += n
                 print(f"   [{batch_num}/{num_batches}] {n} itens no staging ✓")
             except Exception as e:

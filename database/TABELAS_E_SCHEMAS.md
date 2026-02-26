@@ -11,7 +11,10 @@ As tabelas **não** estão no schema `public`. O código Python usa explicitamen
 | **auth_integrations** | **sync_checkpoints** | Checkpoints de sync incremental (sales, stock) |
 | **staging** | **tiny_sales** | Dados brutos de vendas do Tiny |
 | **staging** | **tiny_stock** | Dados brutos de estoque do Tiny |
-| **staging** | **tiny_sale_items** | Dados brutos de itens de vendas |
+| **staging** | **tiny_sale_items** | Dados brutos de itens de vendas do Tiny |
+| **staging** | **contaazul_sales** | Dados brutos de vendas do Conta Azul |
+| **staging** | **contaazul_stock** | Dados brutos de estoque do Conta Azul |
+| **staging** | **contaazul_sale_items** | Dados brutos de itens de vendas do Conta Azul |
 | **core** | **customers** | Clientes normalizados (normalizer) |
 | **core** | **sales** | Vendas normalizadas (normalizer) |
 | **core** | **sale_items** | Itens de vendas normalizados (normalizer) |

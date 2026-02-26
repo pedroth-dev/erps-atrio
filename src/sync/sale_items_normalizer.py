@@ -1,19 +1,20 @@
 """
-Normalizer: lê staging.tiny_sale_items (processed_at IS NULL), grava em core.sale_items.
+Normalizer: lê staging (tiny_sale_items ou contaazul_sale_items) e grava em core.sale_items.
 Processamento em lote para ser bem mais rápido.
 """
 import logging
 from typing import Optional, List, Dict, Any
 
 from src.database.supabase_client import SupabaseClient
+from src.sync.contaazul_normalizer import contaazul_extract_sale_item
 
 logger = logging.getLogger(__name__)
 
 NORMALIZER_BATCH_SIZE = 100
 
 
-def _extract_sale_item(raw_item: Dict[str, Any], sale_external_id: str) -> Dict[str, Any]:
-    """Extrai dados do item para core.sale_items."""
+def _extract_sale_item_tiny(raw_item: Dict[str, Any], sale_external_id: str) -> Dict[str, Any]:
+    """Extrai dados do item Tiny para core.sale_items."""
     produto = raw_item.get("produto") or {}
     if not isinstance(produto, dict):
         raise ValueError("Item sem objeto 'produto' no raw_data")
@@ -24,7 +25,7 @@ def _extract_sale_item(raw_item: Dict[str, Any], sale_external_id: str) -> Dict[
 
     quantidade = raw_item.get("quantidade")
     valor_unitario = raw_item.get("valorUnitario") or raw_item.get("valor_unitario")
-    
+
     if quantidade is None or valor_unitario is None:
         raise ValueError("Item sem quantidade ou valorUnitario")
 
@@ -33,14 +34,14 @@ def _extract_sale_item(raw_item: Dict[str, Any], sale_external_id: str) -> Dict[
         unit_price = float(str(valor_unitario).replace(",", "."))
         total_price = qty * unit_price
     except (TypeError, ValueError) as e:
-        raise ValueError(f"Erro ao converter quantidade/valor: {e}")
+        raise ValueError(f"Erro ao converter quantidade/valor: {e}") from e
 
     return {
         "sale_external_id": str(sale_external_id),
         "product_external_id": str(product_external_id),
         "product_sku": produto.get("sku"),
         "product_description": produto.get("descricao"),
-        "product_type": produto.get("tipo"),  # 'P' ou 'S'
+        "product_type": produto.get("tipo"),
         "quantity": qty,
         "unit_price": unit_price,
         "total_price": total_price,
@@ -59,21 +60,22 @@ def process_pending_sale_items(
     Processa itens de vendas pendentes do staging para o core em lotes.
     Se sale_external_ids for informado, processa apenas itens dessas vendas (sync incremental).
     """
+    staging_table = "contaazul_sale_items" if erp_type == "contaazul" else "tiny_sale_items"
+    extract_item = contaazul_extract_sale_item if erp_type == "contaazul" else _extract_sale_item_tiny
+
     total_processed = 0
     fetch_limit = limit
 
     while True:
         pending = db.get_pending_staging_sale_items(
-            company_id, limit=fetch_limit, sale_external_ids=sale_external_ids
+            company_id, limit=fetch_limit, sale_external_ids=sale_external_ids, erp_type=erp_type
         )
         if not pending:
             break
 
         batch_total = len(pending)
         if total_processed == 0:
-            print(f"📋 Normalizando itens de vendas em lotes de {NORMALIZER_BATCH_SIZE}...")
-
-        processed_in_batch = 0
+            print(f"📋 Normalizando itens de vendas [{erp_type}] em lotes de {NORMALIZER_BATCH_SIZE}...")
 
         for start in range(0, batch_total, NORMALIZER_BATCH_SIZE):
             batch = pending[start : start + NORMALIZER_BATCH_SIZE]
@@ -86,7 +88,7 @@ def process_pending_sale_items(
                 sale_external_id = row.get("sale_external_id")
                 if not record_id or raw_data is None or not sale_external_id:
                     if record_id:
-                        db.mark_staging_processed("tiny_sale_items", str(record_id), error="dados ausentes")
+                        db.mark_staging_processed(staging_table, str(record_id), error="dados ausentes")
                     continue
                 record_ids.append(str(record_id))
                 valid_rows.append({"id": record_id, "raw_data": raw_data, "sale_external_id": sale_external_id})
@@ -95,7 +97,6 @@ def process_pending_sale_items(
                 continue
 
             try:
-                # Buscar sale_id e metadata para todas as vendas de uma vez (otimização)
                 unique_sale_ids = list(set(item["sale_external_id"] for item in valid_rows))
                 sales_result = (
                     db._core_sales()
@@ -105,7 +106,7 @@ def process_pending_sale_items(
                     .in_("external_id", unique_sale_ids)
                     .execute()
                 )
-                
+
                 sale_id_map: Dict[str, Optional[str]] = {}
                 sale_metadata: Dict[str, Dict] = {}
                 for sale in sales_result.data:
@@ -116,13 +117,12 @@ def process_pending_sale_items(
                         "status": sale.get("status"),
                     }
 
-                # Montar itens normalizados
                 item_rows: List[Dict[str, Any]] = []
                 ok_ids: List[str] = []
                 for item in valid_rows:
                     try:
                         ext_id = item["sale_external_id"]
-                        item_data = _extract_sale_item(item["raw_data"], ext_id)
+                        item_data = extract_item(item["raw_data"], ext_id)
                         item_data["sale_id"] = sale_id_map.get(ext_id)
                         meta = sale_metadata.get(ext_id, {})
                         item_data["sale_date"] = meta.get("issued_at")
@@ -130,10 +130,8 @@ def process_pending_sale_items(
                         item_rows.append(item_data)
                         ok_ids.append(str(item["id"]))
                     except Exception as ex:
-                        db.mark_staging_processed("tiny_sale_items", str(item["id"]), error=str(ex)[:500])
+                        db.mark_staging_processed(staging_table, str(item["id"]), error=str(ex)[:500])
 
-                # Deduplicar por (sale_external_id, product_external_id): mesmo produto na mesma venda
-                # agrega quantidade e total_price (evita erro "cannot affect row a second time" no upsert)
                 if item_rows:
                     by_key: Dict[tuple, Dict[str, Any]] = {}
                     for r in item_rows:
@@ -152,19 +150,18 @@ def process_pending_sale_items(
 
                 if item_rows:
                     db.upsert_core_sale_items_batch(company_id, erp_type, item_rows)
-                    db.mark_staging_sale_items_processed_batch(ok_ids, error=None)
-                processed_in_batch += len(ok_ids)
+                    db.mark_staging_sale_items_processed_batch(ok_ids, error=None, erp_type=erp_type)
                 total_processed += len(ok_ids)
                 print(f"   → {total_processed} itens normalizados")
             except Exception as e:
                 msg = str(e)[:500]
                 logger.exception("Normalizer erro no lote de itens: %s", msg)
                 try:
-                    db.mark_staging_sale_items_processed_batch(record_ids, error=msg)
+                    db.mark_staging_sale_items_processed_batch(record_ids, error=msg, erp_type=erp_type)
                 except Exception:
                     for rid in record_ids:
                         try:
-                            db.mark_staging_processed("tiny_sale_items", rid, error=msg)
+                            db.mark_staging_processed(staging_table, rid, error=msg)
                         except Exception:
                             pass
 

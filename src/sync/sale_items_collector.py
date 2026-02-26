@@ -1,6 +1,7 @@
 """
-Collector: busca detalhes de vendas já normalizadas (core.sales) e coleta itens para staging.
-Faz GET /pedidos/{idPedido} para cada venda e extrai o array 'itens'.
+Collector: busca itens de vendas já normalizadas (core.sales) e grava no staging.
+- Tiny: GET /pedidos/{idPedido} e extrai o array 'itens'.
+- Conta Azul: GET /v1/venda/{id}/itens.
 Em sync incremental, deve receber apenas os external_id das vendas recém-normalizadas.
 """
 import logging
@@ -11,6 +12,7 @@ from datetime import datetime, timezone
 from src.database.supabase_client import SupabaseClient
 from src.auth.token_manager import TokenManager
 from src.integrations.tiny_client import TinyClient
+from src.integrations.contaazul_client import ContaAzulClient
 
 logger = logging.getLogger(__name__)
 
@@ -55,8 +57,11 @@ class SaleItemsCollector:
         if not connection or not connection.get("is_active"):
             raise ValueError(f"Conexão {connection_id} não está ativa")
 
-        access_token = self.token_manager.get_valid_token(connection_id)
-        tiny_client = TinyClient(access_token)
+        access_token = self.token_manager.get_valid_token(connection_id, erp_type=erp_type)
+        if erp_type == "contaazul":
+            api_client = ContaAzulClient(access_token)
+        else:
+            api_client = TinyClient(access_token)
 
         total_items = 0
         total_sales_processed = 0
@@ -112,7 +117,7 @@ class SaleItemsCollector:
 
             sale_ext_ids = [str(s.get("external_id")) for s in sales if s.get("external_id")]
             staging_id_map = self.db.get_staging_sale_ids_by_external_ids(
-                company_id, sale_ext_ids
+                company_id, sale_ext_ids, erp_type=erp_type
             )
 
             total_in_batch = len(sales)
@@ -122,14 +127,18 @@ class SaleItemsCollector:
                     continue
                 sale_staging_id = staging_id_map.get(str(sale_external_id))
                 try:
-                    details, elapsed = tiny_client.fetch_sale_details_timed(str(sale_external_id))
+                    if erp_type == "contaazul":
+                        items, elapsed = api_client.fetch_sale_items_timed(str(sale_external_id))
+                        items = items or []
+                    else:
+                        details, elapsed = api_client.fetch_sale_details_timed(str(sale_external_id))
+                        if not details:
+                            batch_failed += 1
+                            total_sales_failed += 1
+                            continue
+                        items = details.get("itens") or []
                     api_times.append(elapsed)
                     batch_api_count += 1
-                    if not details:
-                        batch_failed += 1
-                        total_sales_failed += 1
-                        continue
-                    items = details.get("itens") or []
                     if not items:
                         batch_no_items += 1
                         total_sales_no_items += 1
@@ -140,6 +149,7 @@ class SaleItemsCollector:
                         sale_staging_id=sale_staging_id,
                         items=items,
                         fetched_at=fetched_at,
+                        erp_type=erp_type,
                     )
                     total_items += n
                     total_sales_processed += 1

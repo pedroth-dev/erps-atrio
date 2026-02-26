@@ -14,6 +14,11 @@ sys.path.insert(0, str(root_dir))
 
 from src.database.supabase_client import SupabaseClient
 from src.auth.oauth_flow import OAuthFlow
+from src.config.settings import (
+    CONTAZUL_CLIENT_ID,
+    CONTAZUL_CLIENT_SECRET,
+    CONTAZUL_REDIRECT_URI,
+)
 
 
 def validate_cnpj(cnpj: str) -> bool:
@@ -70,14 +75,28 @@ def onboard_company(
     if not validate_cnpj(document):
         raise ValueError("CNPJ inválido")
     
+    if erp_type not in ["tiny", "bling", "omie", "contaazul"]:
+        raise ValueError(f"Tipo de ERP inválido: {erp_type}")
+    
     if not erp_login or not erp_password:
         raise ValueError("Login e senha do ERP são obrigatórios")
-    
-    if not client_id or not client_secret or not redirect_uri:
-        raise ValueError("Credenciais OAuth (client_id, client_secret, redirect_uri) são obrigatórias")
-    
-    if erp_type not in ["tiny", "bling", "omie"]:
-        raise ValueError(f"Tipo de ERP inválido: {erp_type}")
+
+    # Para Conta Azul, usamos client_id/client_secret/redirect_uri globais do .env.
+    # Isso evita repetir essas credenciais por empresa; o que diferencia cada conexão
+    # são login/senha e os tokens obtidos.
+    if erp_type == "contaazul":
+        cid = client_id or CONTAZUL_CLIENT_ID
+        csecret = client_secret or CONTAZUL_CLIENT_SECRET
+        credir = redirect_uri or CONTAZUL_REDIRECT_URI
+        if not cid or not csecret or not credir:
+            raise ValueError(
+                "Credenciais OAuth da aplicação Conta Azul devem estar configuradas "
+                "no .env (CONTAZUL_CLIENT_ID, CONTAZUL_CLIENT_SECRET, CONTAZUL_REDIRECT_URI)."
+            )
+        client_id, client_secret, redirect_uri = cid, csecret, credir
+    else:
+        if not client_id or not client_secret or not redirect_uri:
+            raise ValueError("Credenciais OAuth (client_id, client_secret, redirect_uri) são obrigatórias")
     
     # Verifica se empresa já existe
     existing = db.get_company_by_document(document)
@@ -139,15 +158,36 @@ if __name__ == "__main__":
         sys.exit(0)
     
     document = input("CNPJ (apenas números ou com formatação): ").strip()
-    erp_type = input("Tipo do ERP (tiny / bling / omie) [tiny]: ").strip() or "tiny"
+    erp_type = input("Tipo do ERP (tiny / bling / omie / contaazul) [tiny]: ").strip() or "tiny"
     erp_login = input("Login do ERP (e-mail): ").strip()
     erp_password = input("Senha do ERP: ").strip()
-    client_id = input("Client ID (aplicação OAuth): ").strip()
-    client_secret = input("Client Secret (aplicação OAuth): ").strip()
-    redirect_uri = input("Redirect URI (ex: https://..../oauth/tiny): ").strip()
-    
-    if not document or not erp_login or not erp_password or not client_id or not client_secret or not redirect_uri:
-        print("Todos os campos são obrigatórios (exceto tipo do ERP). Cancelado.")
+
+    client_id = ""
+    client_secret = ""
+    redirect_uri = ""
+
+    if erp_type == "contaazul":
+        # Usa credenciais globais do .env; não pergunta no prompt.
+        client_id = CONTAZUL_CLIENT_ID or ""
+        client_secret = CONTAZUL_CLIENT_SECRET or ""
+        redirect_uri = CONTAZUL_REDIRECT_URI or ""
+        if not client_id or not client_secret or not redirect_uri:
+            print(
+                "As variáveis CONTAZUL_CLIENT_ID, CONTAZUL_CLIENT_SECRET e CONTAZUL_REDIRECT_URI "
+                "devem estar configuradas no .env para onboarding Conta Azul."
+            )
+            sys.exit(1)
+        print("\nUsando credenciais OAuth globais da aplicação Conta Azul definidas no .env.")
+    else:
+        client_id = input("Client ID (aplicação OAuth): ").strip()
+        client_secret = input("Client Secret (aplicação OAuth): ").strip()
+        redirect_uri = input("Redirect URI (ex: https://..../oauth/tiny): ").strip()
+        if not client_id or not client_secret or not redirect_uri:
+            print("Client ID, Client Secret e Redirect URI são obrigatórios para este ERP. Cancelado.")
+            sys.exit(1)
+
+    if not document or not erp_login or not erp_password:
+        print("Nome, CNPJ, login e senha do ERP são obrigatórios. Cancelado.")
         sys.exit(1)
     
     try:

@@ -64,7 +64,7 @@ O script não precisa se preocupar com as seguintes operações — o banco as e
 
 - Buscar apenas conexões com `is_active = true` antes de iniciar qualquer sincronização.
 - Passar sempre pelo `token_manager` antes de qualquer requisição à API do ERP.
-- Inserir o payload bruto completo no staging (`staging.tiny_sales`, `staging.tiny_stock`) exatamente como retornado pela API, sem nenhuma alteração.
+- Inserir o payload bruto completo no staging exatamente como retornado pela API, sem nenhuma alteração. As tabelas de staging são por ERP: `staging.tiny_sales`, `staging.tiny_stock`, `staging.tiny_sale_items` (Tiny); `staging.contaazul_sales`, `staging.contaazul_stock`, `staging.contaazul_sale_items` (Conta Azul).
 - Registrar o `fetched_at` com o momento exato da coleta.
 - Atualizar `last_sync_at` em `erp_connections` ao final de cada coleta bem-sucedida.
 - Tratar paginação da API — nunca assumir que todos os dados vieram em uma única resposta.

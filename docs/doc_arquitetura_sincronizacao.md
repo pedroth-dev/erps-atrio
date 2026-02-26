@@ -55,6 +55,7 @@ CELERY_TASK_QUEUES = (
     Queue('tiny'),
     Queue('bling'),
     Queue('omie'),
+    Queue('contaazul'),
 )
 
 CELERY_DEFAULT_QUEUE = 'default'
@@ -75,6 +76,9 @@ celery -A tasks worker --queues=tiny --concurrency=2
 
 # workers do Bling
 celery -A tasks worker --queues=bling --concurrency=2
+
+# workers do Conta Azul
+celery -A tasks worker --queues=contaazul --concurrency=2
 ```
 
 ---
@@ -225,8 +229,10 @@ def dispatch_all():
             elif erp == 'bling':
                 sync_bling_sales.delay(company_id)
                 sync_bling_stock.delay(company_id)
-            
-            # adicionar novos ERPs aqui conforme forem integrados
+
+            elif erp == 'contaazul':
+                sync_contaazul_sales.delay(company_id)
+                sync_contaazul_stock.delay(company_id)
 ```
 
 O Celery Beat deve ser iniciado separadamente para gerenciar o agendamento:

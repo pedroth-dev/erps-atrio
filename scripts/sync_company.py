@@ -72,35 +72,32 @@ def sync_company(company_id: str, erp_type: str = "tiny", sync_sales: bool = Tru
             erp_type=erp_type,
             is_full_refresh=is_full_refresh,
         )
-        # Normalizer: staging.tiny_sales → core.customers + core.sales (apenas Tiny por enquanto)
-        # Processa TODAS as pendentes (não apenas 500)
-        if erp_type == "tiny":
-            n, sale_external_ids = process_pending_sales(db, company_id, erp_type, limit=500)
-            if n > 0:
-                print(f"📋 Normalizado: {n} vendas → core.customers / core.sales")
+        # Normalizer: staging → core.customers + core.sales (Tiny e Conta Azul)
+        n, sale_external_ids = process_pending_sales(db, company_id, erp_type, limit=500)
+        if n > 0:
+            print(f"📋 Normalizado: {n} vendas → core.customers / core.sales")
 
-            # Coleta itens apenas das vendas recém-normalizadas (incremental = só essas; evita refazer todas)
-            collector = SaleItemsCollector(db, token_manager)
-            items_collected = collector.collect_sale_items(
-                company_id, connection_id, erp_type, batch_size=100,
-                sale_external_ids=sale_external_ids,
-            )
+        # Coleta itens apenas das vendas recém-normalizadas (incremental)
+        collector = SaleItemsCollector(db, token_manager)
+        collector.collect_sale_items(
+            company_id, connection_id, erp_type, batch_size=100,
+            sale_external_ids=sale_external_ids,
+        )
 
-            # Normaliza apenas itens das vendas recém-normalizadas (evita processar 222 quando só 28 são novos)
-            items_normalized = process_pending_sale_items(
-                db, company_id, erp_type, limit=500, sale_external_ids=sale_external_ids
-            )
-            if items_normalized > 0:
-                print(f"📦 Normalizado: {items_normalized} itens → core.sale_items")
+        # Normaliza itens das vendas recém-normalizadas
+        items_normalized = process_pending_sale_items(
+            db, company_id, erp_type, limit=500, sale_external_ids=sale_external_ids
+        )
+        if items_normalized > 0:
+            print(f"📦 Normalizado: {items_normalized} itens → core.sale_items")
     
     # Sincroniza estoque
     if sync_stock:
         stock_sync = StockSync(db, token_manager)
         stock_sync.sync_company_stock(company_id, connection_id, erp_type=erp_type)
-        if erp_type == "tiny":
-            n_stock = process_pending_stock(db, company_id, erp_type, limit=500)
-            if n_stock > 0:
-                print(f"📦 Normalizado: {n_stock} estoques → core.stock")
+        n_stock = process_pending_stock(db, company_id, erp_type, limit=500)
+        if n_stock > 0:
+            print(f"📦 Normalizado: {n_stock} estoques → core.stock")
 
     print("\n" + "=" * 60)
     print("✨ SINCRONIZAÇÃO CONCLUÍDA!")
