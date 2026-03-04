@@ -14,13 +14,16 @@ A decisão de ter um staging separado do `core` traz três vantagens principais:
 - **Rastreabilidade** — você consegue comparar o dado bruto com o que foi normalizado para o `core`, facilitando depuração.
 - **Separação de responsabilidades** — o script Python que coleta dados da API não precisa saber nada sobre a estrutura do `core`. Ele só insere o raw e segue em frente.
 
-Atualmente o staging contém tabelas para o ERP **Tiny** e para o **Conta Azul**:
+Atualmente o staging contém tabelas para o ERP **Tiny**, para o **Conta Azul** e para o **Bling**:
 - `tiny_sales` — vendas (pedidos) do Tiny
 - `tiny_stock` — estoque de produtos do Tiny
 - `tiny_sale_items` — itens de vendas do Tiny (produtos vendidos em cada pedido)
 - `contaazul_sales` — vendas (pedidos) do Conta Azul
 - `contaazul_stock` — estoque de produtos do Conta Azul
 - `contaazul_sale_items` — itens de vendas do Conta Azul (produtos vendidos em cada venda)
+- `bling_sales` — vendas (pedidos) do Bling (API v3)
+- `bling_stock` — estoque de produtos do Bling
+- `bling_sale_items` — itens de vendas do Bling (produtos vendidos em cada pedido)
 
 Conforme novos ERPs forem integrados, novas tabelas serão adicionadas aqui seguindo o mesmo padrão.
 
@@ -201,7 +204,10 @@ Assim como na tabela de itens do Tiny, existe um índice parcial para pendência
 | 8º    | staging_tiny_sale_items.sql          |
 | 9º    | staging_contaazul_sales.sql          |
 | 10º   | staging_contaazul_stock.sql          |
-| 11º   | staging_contaazul_sale_items.sql     |
+| 11º   | staging_contaazul_sale_items.sql    |
+| 12º   | staging_bling_sales.sql              |
+| 13º   | staging_bling_stock.sql              |
+| 14º   | staging_bling_sale_items.sql        |
 
 Os arquivos do staging dependem do schema `auth_integrations` estar completamente criado (arquivos 01 a 05) antes de serem executados.
 
@@ -209,14 +215,6 @@ Os arquivos do staging dependem do schema `auth_integrations` estar completament
 
 ## Adicionando novos ERPs no futuro
 
-Quando um novo ERP for integrado, basta criar novas tabelas dentro do schema `staging` seguindo o mesmo padrão:
-
-```
-staging.bling_sales
-staging.bling_stock
-staging.bling_sale_items
-staging.omie_sales
-...
-```
+Quando um novo ERP for integrado, basta criar novas tabelas dentro do schema `staging` seguindo o mesmo padrão (ex.: `staging.omie_sales`, `staging.omie_stock`, `staging.omie_sale_items`). As tabelas do Bling (`bling_sales`, `bling_stock`, `bling_sale_items`) já seguem esse padrão.
 
 Cada tabela terá sua própria estrutura de `raw_data` correspondente ao payload daquele ERP específico, e seu próprio script de normalização que saberá como extrair e transformar os campos para o `core`.

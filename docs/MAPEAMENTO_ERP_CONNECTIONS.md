@@ -52,6 +52,9 @@ python scripts/onboarding.py "Nome" "CNPJ" tiny "login" "senha" "client_id" "cli
 
 # Conta Azul
 python scripts/onboarding.py "Nome" "CNPJ" contaazul "login" "senha" "client_id" "client_secret" "https://..../redirect"
+
+# Bling (OAuth 2.0 Authorization Code; troca de code por tokens usa autenticação HTTP Basic)
+python scripts/onboarding.py "Nome" "CNPJ" bling "login" "senha" "client_id" "client_secret" "https://..../redirect"
 ```
 
 Consulte `scripts/onboarding.py` e `src/database/supabase_client.py` (métodos `create_erp_connection` e `update_erp_tokens`) para detalhes do código.

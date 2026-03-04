@@ -7,6 +7,7 @@ from typing import Optional, List, Dict, Any
 
 from src.database.supabase_client import SupabaseClient
 from src.sync.contaazul_normalizer import contaazul_extract_sale_item
+from src.sync.bling_normalizer import bling_extract_sale_item
 
 logger = logging.getLogger(__name__)
 
@@ -60,8 +61,15 @@ def process_pending_sale_items(
     Processa itens de vendas pendentes do staging para o core em lotes.
     Se sale_external_ids for informado, processa apenas itens dessas vendas (sync incremental).
     """
-    staging_table = "contaazul_sale_items" if erp_type == "contaazul" else "tiny_sale_items"
-    extract_item = contaazul_extract_sale_item if erp_type == "contaazul" else _extract_sale_item_tiny
+    if erp_type == "bling":
+        staging_table = "bling_sale_items"
+        extract_item = bling_extract_sale_item
+    elif erp_type == "contaazul":
+        staging_table = "contaazul_sale_items"
+        extract_item = contaazul_extract_sale_item
+    else:
+        staging_table = "tiny_sale_items"
+        extract_item = _extract_sale_item_tiny
 
     total_processed = 0
     fetch_limit = limit

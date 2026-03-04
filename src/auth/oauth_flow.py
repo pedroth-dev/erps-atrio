@@ -15,6 +15,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException, NoSuchElementException
 from webdriver_manager.chrome import ChromeDriverManager
+import base64
 from urllib.parse import urlparse, parse_qs, urlencode
 
 from src.config.settings import (
@@ -23,6 +24,8 @@ from src.config.settings import (
     CONTAZUL_AUTH_URL,
     CONTAZUL_TOKEN_URL,
     CONTAZUL_AUTH_SCOPE,
+    BLING_AUTH_URL,
+    BLING_TOKEN_URL,
 )
 from src.database.supabase_client import SupabaseClient
 
@@ -118,6 +121,10 @@ class OAuthFlow:
             auth_base_url = CONTAZUL_AUTH_URL
             token_url = CONTAZUL_TOKEN_URL
             scope = CONTAZUL_AUTH_SCOPE
+        elif erp_type == "bling":
+            auth_base_url = BLING_AUTH_URL
+            token_url = BLING_TOKEN_URL
+            scope = ""  # Bling usa escopos do cadastro do app; redirect_uri/scope opcionais na RFC
         else:
             raise ValueError(f"ERP não suportado para OAuth: {erp_type}")
         
@@ -153,7 +160,7 @@ class OAuthFlow:
         # para agora + 30 dias. Assim, só haverá reautenticação se a conexão ficar 30 dias
         # sem nenhuma chamada que force refresh.
         expires_in = tokens.get("expires_in", 14400)
-        if erp_type == "contaazul":
+        if erp_type in ("contaazul", "bling"):
             refresh_expires_in = 30 * 24 * 3600  # 30 dias em segundos
         else:
             refresh_expires_in = tokens.get("refresh_expires_in", 86400)
@@ -203,18 +210,22 @@ class OAuthFlow:
             service = Service(ChromeDriverManager().install())
             driver = webdriver.Chrome(service=service, options=chrome_options)
             
-            # Monta URL de autorização alinhada à doc oficial da Conta Azul.
-            # O scope deve ter + literais (ex: openid+profile+aws.cognito.signin.user.admin);
-            # urlencode converte + em %2B e o servidor retorna invalid_scope.
+            # Monta URL de autorização.
+            # Para Conta Azul, seguimos a doc oficial (inclui redirect_uri e scope com + literais).
+            # Para Bling, a própria doc informa que redirect_uri/scope são opcionais e usa sempre
+            # os valores cadastrados no app. Por isso, na URL enviamos apenas response_type, client_id e state.
+            is_bling = "bling.com.br" in auth_base_url.lower()
             params_encoded = {
                 "response_type": "code",
                 "client_id": client_id,
-                "redirect_uri": redirect_uri,
                 "state": f"atrio-{int(time.time())}",
             }
+            if not is_bling:
+                params_encoded["redirect_uri"] = redirect_uri
             query = urlencode(params_encoded)
-            # Scope sem codificar os + (valor exato da URL que funciona no portal)
-            query = f"{query}&scope={scope}" if query else f"scope={scope}"
+            # Scope: sem codificar os + (Conta Azul); Bling usa escopos do cadastro do app, omitir se vazio
+            if scope:
+                query = f"{query}&scope={scope}" if query else f"scope={scope}"
             auth_url = f"{auth_base_url}?{query}"
 
             print("🌐 URL de autorização construída para OAuth:")
@@ -227,14 +238,27 @@ class OAuthFlow:
             
             # ---- Usuário: várias estratégias ----
             print("✍️  Preenchendo usuário...")
-            username_strategies = [
-                (By.CSS_SELECTOR, "input[name='username']"),
-                (By.CSS_SELECTOR, "input[id='username']"),
-                (By.CSS_SELECTOR, "input[type='email']"),
-                (By.CSS_SELECTOR, "input[type='text']"),
-                (By.XPATH, "//input[@autocomplete='username']"),
-                (By.XPATH, "//input[contains(@placeholder, 'mail') or contains(@placeholder, 'usuário') or contains(@placeholder, 'login')]"),
-            ]
+            username_strategies: List[Tuple[By, str]] = []
+            # Bling: página de login específica (xpaths absolutos fornecidos)
+            if is_bling:
+                username_strategies.append(
+                    (By.XPATH, "/html/body/div/div/div/form/div[2]/input")
+                )
+            username_strategies.extend(
+                [
+                    (By.CSS_SELECTOR, "input[name='username']"),
+                    (By.CSS_SELECTOR, "input[id='username']"),
+                    (By.CSS_SELECTOR, "input[type='email']"),
+                    (By.CSS_SELECTOR, "input[type='text']"),
+                    (By.XPATH, "//input[@autocomplete='username']"),
+                    (
+                        By.XPATH,
+                        "//input[contains(@placeholder, 'mail') "
+                        "or contains(@placeholder, 'usuário') "
+                        "or contains(@placeholder, 'login')]",
+                    ),
+                ]
+            )
             username_field = _find_element_resilient(driver, wait, username_strategies)
             if not username_field:
                 raise NoSuchElementException("Não foi possível encontrar o campo de usuário/e-mail")
@@ -252,12 +276,19 @@ class OAuthFlow:
             
             # ---- Senha: várias estratégias ----
             print("✍️  Preenchendo senha...")
-            password_strategies = [
-                (By.CSS_SELECTOR, "input[name='password']"),
-                (By.CSS_SELECTOR, "input[id='password']"),
-                (By.CSS_SELECTOR, "input[type='password']"),
-                (By.XPATH, "//input[@type='password']"),
-            ]
+            password_strategies: List[Tuple[By, str]] = []
+            if is_bling:
+                password_strategies.append(
+                    (By.XPATH, "/html/body/div/div/div/form/div[3]/input")
+                )
+            password_strategies.extend(
+                [
+                    (By.CSS_SELECTOR, "input[name='password']"),
+                    (By.CSS_SELECTOR, "input[id='password']"),
+                    (By.CSS_SELECTOR, "input[type='password']"),
+                    (By.XPATH, "//input[@type='password']"),
+                ]
+            )
             password_field = _find_element_resilient(driver, wait, password_strategies)
             if not password_field:
                 raise NoSuchElementException("Não foi possível encontrar o campo de senha")
@@ -268,22 +299,50 @@ class OAuthFlow:
             # ---- Botão de login: sempre buscar Sign in OU Entrar (página pode traduzir) ----
             print("🔘 Clicando no botão de login...")
             login_button = None
-            # 1) Sign in ou Entrar — input value ou texto do botão (Conta Azul / Tiny / tradução)
-            signin_entrar_strategies = [
-                (By.XPATH, "//input[@type='submit' and (@value='Sign in' or @value='Sign In' or @value='Entrar')]"),
-                (By.XPATH, "//input[contains(@value,'Sign in') or contains(@value,'Sign In') or contains(@value,'Entrar')]"),
-                (By.XPATH, "//button[normalize-space(text())='Sign in' or normalize-space(text())='Sign In' or normalize-space(text())='Entrar']"),
-                (By.XPATH, "//button[contains(normalize-space(text()), 'Entrar') or contains(normalize-space(text()), 'Sign in')]"),
-                (By.CSS_SELECTOR, "input[type='submit'][value='Sign in']"),
-                (By.CSS_SELECTOR, "input[type='submit'][value='Sign In']"),
-                (By.CSS_SELECTOR, "input[type='submit'][value='Entrar']"),
-                (By.CSS_SELECTOR, "input.btn-primary[value='Sign in']"),
-                (By.CSS_SELECTOR, "input.submitButton-customizable"),
-                (By.CSS_SELECTOR, "form input.btn.btn-primary"),
-                (By.XPATH, "//*[local-name()='react-login-wc']//form//button[contains(text(), 'Entrar')]"),
-                (By.XPATH, "//form//button[normalize-space(text())='Entrar']"),
-                (By.XPATH, "//react-login-wc//form/button"),
-            ]
+            # 1) Sign in ou Entrar — input value ou texto do botão (Conta Azul / Tiny / Bling / tradução)
+            signin_entrar_strategies: List[Tuple[By, str]] = []
+            if is_bling:
+                signin_entrar_strategies.append(
+                    (By.XPATH, "/html/body/div/div/div/form/div[6]/button")
+                )
+            signin_entrar_strategies.extend(
+                [
+                    (
+                        By.XPATH,
+                        "//input[@type='submit' and "
+                        "(@value='Sign in' or @value='Sign In' or @value='Entrar')]",
+                    ),
+                    (
+                        By.XPATH,
+                        "//input[contains(@value,'Sign in') "
+                        "or contains(@value,'Sign In') "
+                        "or contains(@value,'Entrar')]",
+                    ),
+                    (
+                        By.XPATH,
+                        "//button[normalize-space(text())='Sign in' "
+                        "or normalize-space(text())='Sign In' "
+                        "or normalize-space(text())='Entrar']",
+                    ),
+                    (
+                        By.XPATH,
+                        "//button[contains(normalize-space(text()), 'Entrar') "
+                        "or contains(normalize-space(text()), 'Sign in')]",
+                    ),
+                    (By.CSS_SELECTOR, "input[type='submit'][value='Sign in']"),
+                    (By.CSS_SELECTOR, "input[type='submit'][value='Sign In']"),
+                    (By.CSS_SELECTOR, "input[type='submit'][value='Entrar']"),
+                    (By.CSS_SELECTOR, "input.btn-primary[value='Sign in']"),
+                    (By.CSS_SELECTOR, "input.submitButton-customizable"),
+                    (By.CSS_SELECTOR, "form input.btn.btn-primary"),
+                    (
+                        By.XPATH,
+                        "//*[local-name()='react-login-wc']//form//button[contains(text(), 'Entrar')]",
+                    ),
+                    (By.XPATH, "//form//button[normalize-space(text())='Entrar']"),
+                    (By.XPATH, "//react-login-wc//form/button"),
+                ]
+            )
             login_button = _find_element_resilient(driver, wait, signin_entrar_strategies, timeout_per_try=1.5)
             # 2) Por texto/value do botão (Sign in e Entrar com mesma prioridade)
             if not login_button:
@@ -325,12 +384,16 @@ class OAuthFlow:
                 )
             login_button.click()
             
-            # Aguarda redirecionamento e captura o code
-            # Importante: para ERPs com MFA (código via autenticador no celular),
-            # o usuário pode precisar interagir manualmente com a tela antes do redirect.
-            print("⏳ Aguardando redirecionamento (incluindo eventual passo de 2FA/MFA)...")
-            print("   Se a tela pedir um código do autenticador, digite-o no navegador; vamos aguardar alguns minutos.")
-            max_wait = 180  # até 3 minutos para o usuário confirmar MFA
+            # Aguarda redirecionamento e captura o code.
+            # Para Bling, não há etapa de código autenticador (2FA/MFA) neste fluxo,
+            # então apenas aguardamos o redirect normalmente com um timeout menor.
+            if is_bling:
+                print("⏳ Aguardando redirecionamento do Bling...")
+                max_wait = 60  # tempo suficiente para redirect simples
+            else:
+                print("⏳ Aguardando redirecionamento (incluindo eventual passo de 2FA/MFA)...")
+                print("   Se a tela pedir um código do autenticador, digite-o no navegador; vamos aguardar alguns minutos.")
+                max_wait = 180  # até 3 minutos para o usuário confirmar MFA
             start_time = time.time()
             
             while time.time() - start_time < max_wait:
@@ -378,6 +441,7 @@ class OAuthFlow:
         """
         Troca o código OAuth por tokens de acesso.
         Usa credenciais OAuth do banco de dados.
+        Bling exige autenticação HTTP Basic (client_id:client_secret em base64 no header).
         
         Args:
             code: Código OAuth coletado
@@ -390,14 +454,21 @@ class OAuthFlow:
         """
         payload = {
             'grant_type': 'authorization_code',
-            'client_id': client_id,
-            'client_secret': client_secret,
             'redirect_uri': redirect_uri,
             'code': code
         }
-        
+        if erp_type != "bling":
+            payload['client_id'] = client_id
+            payload['client_secret'] = client_secret
+
         headers = {'Content-Type': 'application/x-www-form-urlencoded'}
+        if erp_type == "bling":
+            basic_creds = base64.b64encode(
+                f"{client_id}:{client_secret}".encode()
+            ).decode()
+            headers['Authorization'] = f"Basic {basic_creds}"
+
         response = requests.post(token_url, data=payload, headers=headers)
         response.raise_for_status()
-        
+
         return response.json()

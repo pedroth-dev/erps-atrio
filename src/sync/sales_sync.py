@@ -10,6 +10,7 @@ from src.database.supabase_client import SupabaseClient
 from src.auth.token_manager import TokenManager
 from src.integrations.tiny_client import TinyClient
 from src.integrations.contaazul_client import ContaAzulClient
+from src.integrations.bling_client import BlingClient
 from src.sync.checkpoints import update_checkpoint
 
 logger = logging.getLogger(__name__)
@@ -62,11 +63,39 @@ class SalesSync:
         # Cliente de API conforme ERP
         if erp_type == "contaazul":
             api_client = ContaAzulClient(access_token)
+        elif erp_type == "bling":
+            api_client = BlingClient(access_token)
         else:
             api_client = TinyClient(access_token)
 
         # Busca vendas
         sales = api_client.fetch_sales(data_inicial, data_final)
+
+        # Para Bling, após obter todas as vendas, resolvemos as situações (status)
+        # via endpoint /situacoes/{idSituacao}, uma vez por ID distinto,
+        # e mesclamos essa informação no campo "situacao" de cada venda.
+        if erp_type == "bling" and sales:
+            situacao_ids = set()
+            for s in sales:
+                situ = s.get("situacao")
+                if isinstance(situ, dict):
+                    sid = situ.get("id")
+                    if isinstance(sid, int):
+                        situacao_ids.add(sid)
+            if situacao_ids:
+                situacoes_map = api_client.fetch_situacoes(list(situacao_ids))
+                for s in sales:
+                    situ = s.get("situacao")
+                    if not isinstance(situ, dict):
+                        continue
+                    sid = situ.get("id")
+                    if not isinstance(sid, int):
+                        continue
+                    resolved = situacoes_map.get(sid)
+                    if isinstance(resolved, dict):
+                        # Mescla para manter id/valor originais e adicionar nome/cor/etc.
+                        merged = {**situ, **resolved}
+                        s["situacao"] = merged
 
         if not sales:
             print("⚠️  Nenhuma venda encontrada")

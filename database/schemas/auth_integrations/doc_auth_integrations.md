@@ -56,6 +56,18 @@ Todos os arquivos devem ser executados **na ordem em que estão numerados**, poi
 - `client_secret` — segredo da aplicação registrada no ERP. **Sempre criptografado** antes de salvar no banco.
 - `redirect_uri` — URI de redirecionamento configurada na aplicação do ERP. Armazenado em texto puro.
 
+> **Nota sobre Conta Azul:** na integração Conta Azul, o `client_id`, o `client_secret` e o `redirect_uri`
+> são definidos globalmente via variáveis de ambiente (`CONTAZUL_CLIENT_ID`, `CONTAZUL_CLIENT_SECRET`,
+> `CONTAZUL_REDIRECT_URI`) e reutilizados em todas as empresas. Ainda assim, esses valores são
+> persistidos em `erp_connections` para cada conexão (como nas demais integrações), permitindo que
+> o `TokenManager` e o `OAuthFlow` funcionem da mesma forma para todos os ERPs.
+>
+> **Nota sobre Bling:** na integração Bling (API v3, OAuth 2.0 Authorization Code), a troca do
+> `authorization_code` por tokens exige **autenticação HTTP Basic** no header da requisição
+> (`Authorization: Basic base64(client_id:client_secret)`). O `client_id` e o `client_secret` não
+> devem ser enviados no body da requisição de token; o backend trata isso automaticamente quando
+> `erp_type = 'bling'`.
+
 **Tokens OAuth (criptografados):**
 - `access_token` — token principal usado nas requisições à API do ERP. No Tiny, dura 4 horas. **Sempre criptografado** antes de salvar no banco.
 - `refresh_token` — usado para renovar o `access_token` quando ele expira, sem precisar que o usuário reconecte manualmente. No Tiny, dura 24 horas. **Sempre criptografado** antes de salvar no banco.
@@ -88,7 +100,10 @@ Todos os arquivos devem ser executados **na ordem em que estão numerados**, poi
 
 **Migração do `.env` para o banco:**
 
-Os campos `client_id`, `client_secret` e `redirect_uri` foram migrados do arquivo `.env` para o banco de dados, permitindo que cada empresa tenha suas próprias credenciais OAuth. Isso é necessário quando diferentes empresas usam aplicações OAuth diferentes no mesmo ERP.
+Os campos `client_id`, `client_secret` e `redirect_uri` foram migrados do arquivo `.env` para o banco de dados,
+permitindo que cada empresa tenha suas próprias credenciais OAuth. Em integrações específicas como a do Conta Azul,
+as credenciais da aplicação podem continuar vindo do `.env` de forma global, mas ainda são salvas em `erp_connections`
+para manter o mesmo modelo de consumo pelo backend.
 
 **Credenciais que permanecem no `.env` (nunca vão para o banco):**
 - `SUPABASE_SERVICE_ROLE_KEY` — chave de acesso ao Supabase (protegida como se fosse criptografada)

@@ -6,13 +6,14 @@ Em sync incremental, deve receber apenas os external_id das vendas recém-normal
 """
 import logging
 import time
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime, timezone
 
 from src.database.supabase_client import SupabaseClient
 from src.auth.token_manager import TokenManager
 from src.integrations.tiny_client import TinyClient
 from src.integrations.contaazul_client import ContaAzulClient
+from src.integrations.bling_client import BlingClient
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +61,8 @@ class SaleItemsCollector:
         access_token = self.token_manager.get_valid_token(connection_id, erp_type=erp_type)
         if erp_type == "contaazul":
             api_client = ContaAzulClient(access_token)
+        elif erp_type == "bling":
+            api_client = BlingClient(access_token)
         else:
             api_client = TinyClient(access_token)
 
@@ -70,6 +73,11 @@ class SaleItemsCollector:
         fetched_at = datetime.now(timezone.utc)
         api_times: List[float] = []
         t_phase_start = time.perf_counter()
+        # Listas para segunda tentativa ao final da fase:
+        # - retry_api_sales: falhas ao chamar a API de itens/detalhes
+        # - retry_db_payloads: falhas ao gravar no staging (Supabase indisponível, etc.)
+        retry_api_sales: List[Tuple[str, Optional[str]]] = []
+        retry_db_payloads: List[List[Dict[str, Any]]] = []
 
         if sale_external_ids is not None:
             # Incremental: apenas as vendas recém-normalizadas nesta execução
@@ -114,6 +122,7 @@ class SaleItemsCollector:
             batch_failed = 0
             batch_no_items = 0
             batch_api_count = 0
+            pending_payloads: List[Dict[str, Any]] = []
 
             sale_ext_ids = [str(s.get("external_id")) for s in sales if s.get("external_id")]
             staging_id_map = self.db.get_staging_sale_ids_by_external_ids(
@@ -126,16 +135,20 @@ class SaleItemsCollector:
                 if not sale_external_id:
                     continue
                 sale_staging_id = staging_id_map.get(str(sale_external_id))
+                # 1) Chamada à API para buscar itens/detalhes
                 try:
                     if erp_type == "contaazul":
                         items, elapsed = api_client.fetch_sale_items_timed(str(sale_external_id))
                         items = items or []
+                    elif erp_type == "bling":
+                        details, elapsed = api_client.fetch_sale_details_timed(str(sale_external_id))
+                        if not details:
+                            raise RuntimeError("Resposta vazia ao buscar detalhes da venda")
+                        items = details.get("itens") or details.get("items") or []
                     else:
                         details, elapsed = api_client.fetch_sale_details_timed(str(sale_external_id))
                         if not details:
-                            batch_failed += 1
-                            total_sales_failed += 1
-                            continue
+                            raise RuntimeError("Resposta vazia ao buscar detalhes da venda")
                         items = details.get("itens") or []
                     api_times.append(elapsed)
                     batch_api_count += 1
@@ -143,25 +156,49 @@ class SaleItemsCollector:
                         batch_no_items += 1
                         total_sales_no_items += 1
                         continue
-                    n = self.db.insert_staging_sale_items_batch(
-                        company_id=company_id,
-                        sale_external_id=sale_external_id,
-                        sale_staging_id=sale_staging_id,
-                        items=items,
-                        fetched_at=fetched_at,
-                        erp_type=erp_type,
-                    )
-                    total_items += n
-                    total_sales_processed += 1
                 except Exception as e:
                     logger.exception("Erro ao coletar itens da venda %s: %s", sale_external_id, e)
                     batch_failed += 1
                     total_sales_failed += 1
+                    # Agenda segunda tentativa de chamada de API ao final
+                    retry_api_sales.append((str(sale_external_id), sale_staging_id))
                     continue
+
+                # 2) Acumula payload da venda para gravação em lote no staging
+                pending_payloads.append(
+                    {
+                        "sale_external_id": str(sale_external_id),
+                        "sale_staging_id": sale_staging_id,
+                        "items": items,
+                    }
+                )
+                total_sales_processed += 1
 
                 # Progresso a cada 50 vendas (768 requisições levam vários minutos)
                 if (idx + 1) % 50 == 0:
                     print(f"   → {idx + 1}/{total_in_batch} vendas consultadas | {total_items} itens até agora...")
+
+                # Quando o buffer de payloads atingir o tamanho do lote, grava em bloco
+                if len(pending_payloads) >= STAGING_BATCH_SIZE:
+                    try:
+                        n = self.db.insert_staging_sale_items_multi(
+                            company_id=company_id,
+                            payloads=pending_payloads,
+                            fetched_at=fetched_at,
+                            erp_type=erp_type,
+                        )
+                        total_items += n
+                        pending_payloads = []
+                    except Exception as e:
+                        logger.exception(
+                            "Erro ao salvar lote de itens no staging: %s",
+                            e,
+                        )
+                        batch_failed += len(pending_payloads)
+                        total_sales_failed += len(pending_payloads)
+                        # Agenda segunda tentativa de gravação ao final (já temos os itens em memória)
+                        retry_db_payloads.append(pending_payloads)
+                        pending_payloads = []
 
             batch_time = sum(api_times[-batch_api_count:]) if batch_api_count else 0
             avg_req = (batch_time / batch_api_count) if batch_api_count else 0
@@ -169,6 +206,93 @@ class SaleItemsCollector:
             if batch_failed > 0 or batch_no_items > 0:
                 status_msg += f" | {batch_failed} falharam | {batch_no_items} sem itens"
             print(status_msg)
+
+            # Após terminar o grupo de vendas deste batch, grava o que sobrou no buffer
+            if pending_payloads:
+                try:
+                    n = self.db.insert_staging_sale_items_multi(
+                        company_id=company_id,
+                        payloads=pending_payloads,
+                        fetched_at=fetched_at,
+                        erp_type=erp_type,
+                    )
+                    total_items += n
+                    pending_payloads = []
+                except Exception as e:
+                    logger.exception(
+                        "Erro ao salvar lote final de itens no staging: %s",
+                        e,
+                    )
+                    batch_failed += len(pending_payloads)
+                    total_sales_failed += len(pending_payloads)
+                    retry_db_payloads.append(pending_payloads)
+                    pending_payloads = []
+
+        # Segunda tentativa: primeiro, re-tenta as chamadas de API que falharam,
+        # depois re-tenta as gravações em staging que deram erro.
+        if retry_api_sales:
+            print(
+                f"\n🔁 Re-tentando coleta de itens para {len(retry_api_sales)} venda(s) que falharam na primeira tentativa..."
+            )
+            for sale_ext_id, sale_staging_id in retry_api_sales:
+                try:
+                    if erp_type == "contaazul":
+                        items, elapsed = api_client.fetch_sale_items_timed(str(sale_ext_id))
+                        items = items or []
+                    elif erp_type == "bling":
+                        details, elapsed = api_client.fetch_sale_details_timed(str(sale_ext_id))
+                        if not details:
+                            continue
+                        items = details.get("itens") or details.get("items") or []
+                    else:
+                        details, elapsed = api_client.fetch_sale_details_timed(str(sale_ext_id))
+                        if not details:
+                            continue
+                        items = details.get("itens") or []
+                    if not items:
+                        continue
+                    n = self.db.insert_staging_sale_items_batch(
+                        company_id=company_id,
+                        sale_external_id=sale_ext_id,
+                        sale_staging_id=sale_staging_id,
+                        items=items,
+                        fetched_at=fetched_at,
+                        erp_type=erp_type,
+                    )
+                    total_items += n
+                    total_sales_processed += 1
+                    # Compensa uma falha anterior
+                    if total_sales_failed > 0:
+                        total_sales_failed -= 1
+                except Exception as e:
+                    logger.exception(
+                        "Segunda tentativa falhou para venda %s (API ou gravação): %s",
+                        sale_ext_id,
+                        e,
+                    )
+
+        if retry_db_payloads:
+            print(
+                f"\n🔁 Re-tentando gravação no staging para {len(retry_db_payloads)} lote(s) que falharam na primeira tentativa..."
+            )
+            for payload_batch in retry_db_payloads:
+                try:
+                    n = self.db.insert_staging_sale_items_multi(
+                        company_id=company_id,
+                        payloads=payload_batch,
+                        fetched_at=fetched_at,
+                        erp_type=erp_type,
+                    )
+                    total_items += n
+                    # Compensa falhas anteriores de gravação para esse lote
+                    failed_count = len(payload_batch)
+                    if total_sales_failed >= failed_count:
+                        total_sales_failed -= failed_count
+                except Exception as e:
+                    logger.exception(
+                        "Segunda tentativa de salvar lote de itens no staging falhou: %s",
+                        e,
+                    )
 
         t_phase_elapsed = time.perf_counter() - t_phase_start
         print(f"\n✅ Resumo da coleta de itens:")

@@ -2,12 +2,13 @@
 Gerenciador de tokens OAuth para ERPs.
 Verifica expiração, renova tokens e gerencia o ciclo de autenticação.
 """
+import base64
 from typing import Optional, Dict, Any
 from datetime import datetime, timedelta, timezone
 import requests
 import time
 
-from src.config.settings import TINY_TOKEN_URL, CONTAZUL_TOKEN_URL
+from src.config.settings import TINY_TOKEN_URL, CONTAZUL_TOKEN_URL, BLING_TOKEN_URL
 from src.database.supabase_client import SupabaseClient
 class TokenManager:
     """Gerencia tokens OAuth para conexões ERP."""
@@ -86,24 +87,35 @@ class TokenManager:
         
         payload = {
             "grant_type": "refresh_token",
-            "client_id": oauth_creds["client_id"],
-            "client_secret": oauth_creds["client_secret"],
             "refresh_token": refresh_token,
         }
+        # Tiny e Conta Azul aceitam client_id/client_secret no body; Bling exige Basic no header.
+        if erp_type != "bling":
+            payload["client_id"] = oauth_creds["client_id"]
+            payload["client_secret"] = oauth_creds["client_secret"]
         
         # Seleciona endpoint de token conforme ERP
         if erp_type == "tiny":
             token_url = TINY_TOKEN_URL
         elif erp_type == "contaazul":
             token_url = CONTAZUL_TOKEN_URL
+        elif erp_type == "bling":
+            token_url = BLING_TOKEN_URL
         else:
             raise ValueError(f"ERP não suportado para refresh de token: {erp_type}")
         
         if not token_url:
             raise ValueError(f"URL de token não configurada para o ERP {erp_type}")
         
+        headers = {"Content-Type": "application/x-www-form-urlencoded"}
+        if erp_type == "bling":
+            basic_creds = base64.b64encode(
+                f"{oauth_creds['client_id']}:{oauth_creds['client_secret']}".encode()
+            ).decode()
+            headers["Authorization"] = f"Basic {basic_creds}"
+        
         try:
-            response = requests.post(token_url, data=payload)
+            response = requests.post(token_url, data=payload, headers=headers)
             response.raise_for_status()
             
             tokens = response.json()
@@ -112,7 +124,7 @@ class TokenManager:
             # a cada refresh empurramos o refresh_expires_at para agora + 30 dias,
             # evitando reautenticação enquanto houver uso periódico.
             expires_in = tokens.get("expires_in", 14400)
-            if erp_type == "contaazul":
+            if erp_type in ("contaazul", "bling"):
                 refresh_expires_in = 30 * 24 * 3600  # 30 dias em segundos
             else:
                 refresh_expires_in = tokens.get("refresh_expires_in", 86400)

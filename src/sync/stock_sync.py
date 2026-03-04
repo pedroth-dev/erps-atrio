@@ -12,6 +12,7 @@ from src.database.supabase_client import SupabaseClient
 from src.auth.token_manager import TokenManager
 from src.integrations.tiny_client import TinyClient
 from src.integrations.contaazul_client import ContaAzulClient
+from src.integrations.bling_client import BlingClient
 from src.sync.checkpoints import get_sync_start, update_checkpoint
 
 logger = logging.getLogger(__name__)
@@ -75,6 +76,17 @@ class StockSync:
                     data_alteracao_de=data_alteracao_de,
                     data_alteracao_ate=data_alteracao_ate,
                     status="ATIVO",
+                )
+            stock_payloads = products
+        elif erp_type == "bling":
+            # Bling: GET /Api/v3/produtos retorna itens; cada item = 1 registro de staging
+            api_client = BlingClient(access_token)
+            if is_full_refresh:
+                products = api_client.fetch_products(situacao="A")
+            else:
+                data_alteracao = f"{data_inicial} 00:00:00"
+                products = api_client.fetch_products(
+                    situacao="A", data_alteracao=data_alteracao
                 )
             stock_payloads = products
         else:

@@ -8,6 +8,8 @@ Este documento descreve o passo a passo que o script Python executará ao cadast
 
 O onboarding é o único momento em que um humano interage diretamente com o processo de autenticação. Após o formulário ser submetido, tudo ocorre automaticamente — sem intervenção manual para copiar tokens, UUIDs ou códigos.
 
+Este documento foca no **fluxo funcional** do onboarding. Para regras técnicas detalhadas (criptografia, responsabilidades script ↔ banco, boas práticas), consulte também `docs/doc_funcionamento_geral.md`.
+
 O fluxo completo é dividido em 4 etapas:
 
 ```
@@ -116,19 +118,16 @@ A partir desse momento a conexão está ativa e pronta para uso.
 
 ## Etapa 5 — Primeira sincronização
 
-Com a conexão ativa, o scheduler enfileira automaticamente as primeiras tarefas de sincronização para a nova empresa:
+Com a conexão ativa, o scheduler enfileira automaticamente as primeiras tarefas de sincronização para a nova empresa (uma por ERP/tipo de dado). A arquitetura completa de filas e workers está detalhada em `docs/doc_arquitetura_sincronizacao.md`.
+
+De forma simplificada, cada tarefa de sync faz:
 
 ```
-Celery recebe as tarefas conforme o erp_type da conexão:
-  → Tiny: sync_tiny_sales(company_id), sync_tiny_stock(company_id)
-  → Conta Azul: sync_contaazul_sales(company_id), sync_contaazul_stock(company_id)
-
-Cada tarefa:
-  1. token_manager verifica e garante token válido
-  2. Coleta dados da API do Tiny
-  3. Insere raw_data no staging
-  4. Normaliza staging → core
-  5. Atualiza last_sync_at na conexão
+1. token_manager verifica e garante token válido
+2. Coleta dados da API do ERP
+3. Insere raw_data no staging
+4. Normaliza staging → core
+5. Atualiza last_sync_at na conexão
 ```
 
 ---
@@ -152,6 +151,8 @@ refresh_token expirou? (após 24h sem sincronização)
 ---
 
 ## O que nunca deve acontecer
+
+As regras gerais de segurança e boas práticas estão consolidadas em `docs/doc_funcionamento_geral.md`. No contexto específico de onboarding, reforçamos que:
 
 - O script nunca salva login, senha ou **client_secret** em texto puro — sempre criptografado antes do INSERT.
 - A chave de criptografia nunca fica no banco ou no repositório — apenas como variável de ambiente na VPS.

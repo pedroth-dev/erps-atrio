@@ -36,6 +36,13 @@ CONTAZUL_CLIENT_ID = os.getenv("CONTAZUL_CLIENT_ID")
 CONTAZUL_CLIENT_SECRET = os.getenv("CONTAZUL_CLIENT_SECRET")
 CONTAZUL_REDIRECT_URI = os.getenv("CONTAZUL_REDIRECT_URI")
 
+# URLs da API Bling (OAuth 2.0 Authorization Code; doc: https://developer.bling.com.br/aplicativos)
+# Troca de code por tokens exige autenticação HTTP Basic (client_id:client_secret em base64).
+# Autorização: URL gerada pelo próprio Bling (ex.: https://www.bling.com.br/Api/v3/oauth/authorize?response_type=code&client_id=...&state=...)
+BLING_AUTH_URL = "https://www.bling.com.br/Api/v3/oauth/authorize"
+BLING_TOKEN_URL = "https://www.bling.com.br/Api/v3/oauth/token"
+BLING_API_BASE_URL = "https://api.bling.com.br/Api/v3"
+
 # Validações
 if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
     raise ValueError("SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY devem estar configurados no .env")

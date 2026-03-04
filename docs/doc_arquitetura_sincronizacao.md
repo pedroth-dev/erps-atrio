@@ -2,6 +2,8 @@
 
 Este documento descreve como deve ser implementada a arquitetura de tarefas assíncronas e paralelas do script Python, utilizando Celery e Redis, com sincronização incremental de dados dos ERPs.
 
+Ele complementa `docs/doc_funcionamento_geral.md` (contrato script ↔ banco) e foca apenas na orquestração de tarefas.
+
 ---
 
 ## Visão Geral

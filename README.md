@@ -308,14 +308,15 @@ python scripts/sync_company.py <company_id> [erp_type] [--no-sales] [--no-stock]
 
 ## 📚 Documentação Adicional
 
-- **`database/README.md`** — Guia dos schemas do banco
-- **`database/schemas/doc_fluxo_onboarding.md`** — Fluxo completo de onboarding
-- **`database/schemas/doc_funcionamento_geral.md`** — Como o script interage com o banco
-- **`database/schemas/auth_integrations/doc_auth_integrations.md`** — Documentação do schema de autenticação
-- **`RESUMO_CRIPTOGRAFIA.md`** — Detalhes sobre criptografia de credenciais
-- **`MUDANCAS_CREDENCIAIS.md`** — Resumo das mudanças de credenciais
-- **`ESTRUTURA_PROJETO.md`** — Estrutura completa do projeto
-- **`VERIFICACAO_CONFORMIDADE.md`** — Verificação de conformidade com especificações
+- `docs/doc_funcionamento_geral.md` — Contrato entre script e banco (responsabilidades, boas práticas)
+- `docs/doc_arquitetura_sincronizacao.md` — Arquitetura de tarefas com Celery + Redis e sync incremental
+- `docs/doc_fluxo_onboarding.md` — Fluxo completo de onboarding de empresas e autenticação OAuth
+- `docs/MAPEAMENTO_ERP_CONNECTIONS.md` — Mapeamento rápido: argumentos do `onboarding.py` → colunas em `erp_connections`
+- `database/README.md` — Guia dos schemas e ordem de execução dos scripts SQL
+- `database/schemas/doc_schemas.md` — Visão geral dos schemas (`auth_integrations`, `staging`, `core`)
+- `database/schemas/auth_integrations/doc_auth_integrations.md` — Detalhes de `companies`, `erp_connections` e `sync_checkpoints`
+- `database/schemas/staging/doc_staging.md` — Estrutura das tabelas de staging por ERP
+- `database/schemas/core/doc_core.md` — Estrutura das tabelas normalizadas (customers, sales, sale_items, stock)
 
 ## 🐛 Troubleshooting
 

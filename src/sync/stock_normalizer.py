@@ -8,6 +8,7 @@ from typing import List, Dict, Any
 
 from src.database.supabase_client import SupabaseClient
 from src.sync.contaazul_normalizer import contaazul_raw_to_core_stock_row as contaazul_stock_row
+from src.sync.bling_normalizer import bling_raw_to_core_stock_row as bling_stock_row
 
 logger = logging.getLogger(__name__)
 
@@ -47,8 +48,15 @@ def process_pending_stock(
     Returns:
         Número de registros normalizados (inseridos/atualizados no core).
     """
-    staging_table = "contaazul_stock" if erp_type == "contaazul" else "tiny_stock"
-    raw_to_row = contaazul_stock_row if erp_type == "contaazul" else _tiny_raw_to_core_stock_row
+    if erp_type == "bling":
+        staging_table = "bling_stock"
+        raw_to_row = bling_stock_row
+    elif erp_type == "contaazul":
+        staging_table = "contaazul_stock"
+        raw_to_row = contaazul_stock_row
+    else:
+        staging_table = "tiny_stock"
+        raw_to_row = _tiny_raw_to_core_stock_row
 
     total_processed = 0
     total_failed = 0

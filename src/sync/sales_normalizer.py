@@ -8,6 +8,7 @@ from typing import Optional, List, Dict, Any
 from src.database.supabase_client import SupabaseClient
 from src.sync.tiny_normalizer import tiny_raw_to_customer, tiny_raw_to_sale
 from src.sync.contaazul_normalizer import contaazul_raw_to_customer, contaazul_raw_to_sale
+from src.sync.bling_normalizer import bling_raw_to_customer, bling_raw_to_sale
 
 logger = logging.getLogger(__name__)
 
@@ -29,9 +30,18 @@ def process_pending_sales(
         (total_processed, sale_external_ids): quantidade normalizada e lista de external_id
         das vendas que foram para o core (para a coleta de itens buscar só essas).
     """
-    staging_table = "contaazul_sales" if erp_type == "contaazul" else "tiny_sales"
-    raw_to_customer = contaazul_raw_to_customer if erp_type == "contaazul" else tiny_raw_to_customer
-    raw_to_sale = contaazul_raw_to_sale if erp_type == "contaazul" else tiny_raw_to_sale
+    if erp_type == "bling":
+        staging_table = "bling_sales"
+        raw_to_customer = bling_raw_to_customer
+        raw_to_sale = bling_raw_to_sale
+    elif erp_type == "contaazul":
+        staging_table = "contaazul_sales"
+        raw_to_customer = contaazul_raw_to_customer
+        raw_to_sale = contaazul_raw_to_sale
+    else:
+        staging_table = "tiny_sales"
+        raw_to_customer = tiny_raw_to_customer
+        raw_to_sale = tiny_raw_to_sale
 
     total_processed = 0
     total_failed = 0

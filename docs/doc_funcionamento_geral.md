@@ -8,6 +8,10 @@ Este documento descreve como o script Python deve interagir com o banco de dados
 
 O banco de dados e o script Python têm responsabilidades bem definidas e complementares. O banco garante integridade, isolamento e segurança dos dados. O script cuida da lógica de negócio — coleta, transformação, normalização e orquestração.
 
+Para detalhes específicos de cada fluxo:
+- **Onboarding**: veja `docs/doc_fluxo_onboarding.md`.
+- **Arquitetura de tarefas (Celery + Redis) e sync incremental**: veja `docs/doc_arquitetura_sincronizacao.md`.
+
 ```
 Formulário / Agendador
         ↓
@@ -81,9 +85,9 @@ O script não precisa se preocupar com as seguintes operações — o banco as e
 ### Agendamento — scheduler
 
 - Buscar todas as empresas com `is_active = true` em `companies` antes de enfileirar tarefas.
-- Enfileirar tarefas separadas por empresa e por tipo de dado (`sync_tiny_sales`, `sync_tiny_stock`).
-- Usar o Celery com workers paralelos — nunca processar empresas de forma sequencial.
-- Não enfileirar novas tarefas para uma empresa que já tem tarefas pendentes na fila para o mesmo tipo de sincronização.
+- Enfileirar tarefas separadas por empresa e por tipo de dado (`sync_*_sales`, `sync_*_stock`).
+- Garantir que o agendamento não bloqueie o processo principal (tarefa é sempre enfileirada, não executada inline).
+- Para a arquitetura completa de filas, workers, retries e proteção contra duplicidade, consulte `docs/doc_arquitetura_sincronizacao.md`.
 
 ---
 
