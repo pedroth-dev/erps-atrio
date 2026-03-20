@@ -30,7 +30,7 @@ def _get_redis():
 
 def _sync_tiny_sales_impl(company_id: str) -> int:
     """Lógica de sync vendas Tiny (incremental) + normalizer staging → core + itens."""
-    from src.database.supabase_client import SupabaseClient
+    from src.database.postgres_client import PostgresClient
     from src.auth.token_manager import TokenManager
     from src.sync.sales_sync import SalesSync
     from src.sync.checkpoints import get_sync_start
@@ -38,7 +38,7 @@ def _sync_tiny_sales_impl(company_id: str) -> int:
     from src.sync.sale_items_collector import SaleItemsCollector
     from src.sync.sale_items_normalizer import process_pending_sale_items
 
-    db = SupabaseClient()
+    db = PostgresClient()
     token_manager = TokenManager(db)
     connection = db.get_erp_connection(company_id, "tiny")
     if not connection or not connection.get("is_active"):
@@ -71,11 +71,11 @@ def _sync_tiny_sales_impl(company_id: str) -> int:
 
 def _sync_tiny_stock_impl(company_id: str) -> int:
     """Lógica de sync estoque Tiny."""
-    from src.database.supabase_client import SupabaseClient
+    from src.database.postgres_client import PostgresClient
     from src.auth.token_manager import TokenManager
     from src.sync.stock_sync import StockSync
 
-    db = SupabaseClient()
+    db = PostgresClient()
     token_manager = TokenManager(db)
     connection = db.get_erp_connection(company_id, "tiny")
     if not connection or not connection.get("is_active"):
@@ -88,7 +88,7 @@ def _sync_tiny_stock_impl(company_id: str) -> int:
 
 def _sync_contaazul_sales_impl(company_id: str) -> int:
     """Lógica de sync vendas Conta Azul + normalizer + itens."""
-    from src.database.supabase_client import SupabaseClient
+    from src.database.postgres_client import PostgresClient
     from src.auth.token_manager import TokenManager
     from src.sync.sales_sync import SalesSync
     from src.sync.checkpoints import get_sync_start
@@ -96,7 +96,7 @@ def _sync_contaazul_sales_impl(company_id: str) -> int:
     from src.sync.sale_items_collector import SaleItemsCollector
     from src.sync.sale_items_normalizer import process_pending_sale_items
 
-    db = SupabaseClient()
+    db = PostgresClient()
     token_manager = TokenManager(db)
     connection = db.get_erp_connection(company_id, "contaazul")
     if not connection or not connection.get("is_active"):
@@ -128,11 +128,11 @@ def _sync_contaazul_sales_impl(company_id: str) -> int:
 
 def _sync_contaazul_stock_impl(company_id: str) -> int:
     """Lógica de sync estoque Conta Azul."""
-    from src.database.supabase_client import SupabaseClient
+    from src.database.postgres_client import PostgresClient
     from src.auth.token_manager import TokenManager
     from src.sync.stock_sync import StockSync
 
-    db = SupabaseClient()
+    db = PostgresClient()
     token_manager = TokenManager(db)
     connection = db.get_erp_connection(company_id, "contaazul")
     if not connection or not connection.get("is_active"):
@@ -222,9 +222,9 @@ def sync_contaazul_stock(self, company_id: str):
 @app.task(queue="default")
 def dispatch_all():
     """Scheduler: enfileira uma tarefa por (empresa, ERP, tipo) para todas as empresas ativas."""
-    from src.database.supabase_client import SupabaseClient
+    from src.database.postgres_client import PostgresClient
 
-    db = SupabaseClient()
+    db = PostgresClient()
     companies = db.get_all_companies(active_only=True)
     if not companies:
         return

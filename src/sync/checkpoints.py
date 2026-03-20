@@ -5,7 +5,7 @@ A cada 24h executa um refresh dos últimos 30 dias (repõe mudanças de status, 
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Tuple
 
-from src.database.supabase_client import SupabaseClient
+from src.database.postgres_client import PostgresClient
 
 
 # Primeira sincronização ou refresh completo: buscar últimos N dias
@@ -15,7 +15,7 @@ FULL_REFRESH_INTERVAL_HOURS = 24
 
 
 def get_sync_start(
-    db: SupabaseClient,
+    db: PostgresClient,
     company_id: str,
     erp_type: str,
     entity: str,
@@ -75,7 +75,7 @@ def get_sync_start(
 
 
 def update_checkpoint(
-    db: SupabaseClient,
+    db: PostgresClient,
     company_id: str,
     erp_type: str,
     entity: str,

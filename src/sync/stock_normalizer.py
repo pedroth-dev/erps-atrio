@@ -6,7 +6,7 @@ import logging
 from datetime import datetime, timezone
 from typing import List, Dict, Any
 
-from src.database.supabase_client import SupabaseClient
+from src.database.postgres_client import PostgresClient
 from src.sync.contaazul_normalizer import contaazul_raw_to_core_stock_row as contaazul_stock_row
 from src.sync.bling_normalizer import bling_raw_to_core_stock_row as bling_stock_row
 
@@ -37,7 +37,7 @@ def _tiny_raw_to_core_stock_row(raw_data: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def process_pending_stock(
-    db: SupabaseClient,
+    db: PostgresClient,
     company_id: str,
     erp_type: str = "tiny",
     limit: int = 500,

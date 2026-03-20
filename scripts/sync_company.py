@@ -19,7 +19,7 @@ logging.basicConfig(
 for _name in ("httpx", "httpcore", "urllib3"):
     logging.getLogger(_name).setLevel(logging.WARNING)
 
-from src.database.supabase_client import SupabaseClient
+from src.database.postgres_client import PostgresClient
 from src.auth.token_manager import TokenManager
 from src.sync.sales_sync import SalesSync
 from src.sync.stock_sync import StockSync
@@ -40,7 +40,7 @@ def sync_company(company_id: str, erp_type: str = "tiny", sync_sales: bool = Tru
         sync_sales: Se deve sincronizar vendas
         sync_stock: Se deve sincronizar estoque
     """
-    db = SupabaseClient()
+    db = PostgresClient()
     token_manager = TokenManager(db)
     
     print("=" * 60)
@@ -105,7 +105,7 @@ def sync_company(company_id: str, erp_type: str = "tiny", sync_sales: bool = Tru
 
 
 if __name__ == "__main__":
-    db = SupabaseClient()
+    db = PostgresClient()
     
     # Modo interativo: selecionar empresa e tipo de sincronização
     companies = db.get_all_companies()

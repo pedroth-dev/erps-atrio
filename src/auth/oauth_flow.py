@@ -27,7 +27,7 @@ from src.config.settings import (
     BLING_AUTH_URL,
     BLING_TOKEN_URL,
 )
-from src.database.supabase_client import SupabaseClient
+from src.database.postgres_client import PostgresClient
 
 
 def _find_element_resilient(
@@ -35,6 +35,7 @@ def _find_element_resilient(
     wait: WebDriverWait,
     strategies: List[Tuple[By, str]],
     timeout_per_try: float = 2.0,
+    require_clickable: bool = False,
 ) -> Optional[WebElement]:
     """
     Tenta várias estratégias de localização até encontrar um elemento visível.
@@ -43,7 +44,12 @@ def _find_element_resilient(
     for by, selector in strategies:
         try:
             if timeout_per_try > 0:
-                el = wait.until(EC.presence_of_element_located((by, selector)))
+                cond = (
+                    EC.element_to_be_clickable((by, selector))
+                    if require_clickable
+                    else EC.presence_of_element_located((by, selector))
+                )
+                el = wait.until(cond)
             else:
                 el = driver.find_element(by, selector)
             if el and el.is_displayed():
@@ -89,7 +95,7 @@ def _find_button_by_text(
 class OAuthFlow:
     """Gerencia o fluxo OAuth automatizado com Selenium."""
     
-    def __init__(self, db: SupabaseClient):
+    def __init__(self, db: PostgresClient):
         self.db = db
     
     def authenticate_connection(self, connection_id: str, erp_type: str = "tiny") -> Dict[str, Any]:
@@ -215,6 +221,7 @@ class OAuthFlow:
             # Para Bling, a própria doc informa que redirect_uri/scope são opcionais e usa sempre
             # os valores cadastrados no app. Por isso, na URL enviamos apenas response_type, client_id e state.
             is_bling = "bling.com.br" in auth_base_url.lower()
+            is_contaazul = "contaazul" in auth_base_url.lower()
             params_encoded = {
                 "response_type": "code",
                 "client_id": client_id,
@@ -305,6 +312,34 @@ class OAuthFlow:
                 signin_entrar_strategies.append(
                     (By.XPATH, "/html/body/div/div/div/form/div[6]/button")
                 )
+            # Tiny/Conta Azul: prioriza seletores estáveis do DOM
+            # (reduz o número de tentativas e evita esperar o timeout por muitos seletores).
+            if is_contaazul:
+                # Conta Azul: o botão costuma estar dentro de um modal específico.
+                # Seu seletor (querySelector) e XPath absoluto entram como prioridade máxima.
+                signin_entrar_strategies.extend(
+                    [
+                        (
+                            By.CSS_SELECTOR,
+                            "input.btn.btn-primary.submitButton-customizable",
+                        ),
+                        (
+                            By.XPATH,
+                            "/html/body/div[1]/div/div[1]/div[2]/div[2]/div[3]/div/div/form/input[3]",
+                        ),
+                    ]
+                )
+            elif not is_bling:
+                signin_entrar_strategies.extend(
+                    [
+                        (By.CSS_SELECTOR, "#input-wrapper > button"),
+                        (
+                            By.XPATH,
+                            "/html/body/div/div[2]/div/div/react-login-wc/section/main/article/form/button",
+                        ),
+                        (By.CSS_SELECTOR, "react-login-wc button"),
+                    ]
+                )
             signin_entrar_strategies.extend(
                 [
                     (
@@ -343,7 +378,16 @@ class OAuthFlow:
                     (By.XPATH, "//react-login-wc//form/button"),
                 ]
             )
-            login_button = _find_element_resilient(driver, wait, signin_entrar_strategies, timeout_per_try=1.5)
+            login_button = _find_element_resilient(
+                driver,
+                wait,
+                signin_entrar_strategies,
+                timeout_per_try=0.8 if is_contaazul else 1.5,
+                # Em alguns fluxos do Conta Azul, o elemento pode existir mas ficar
+                # momentaneamente "não clicável" (covered/spinner). Para reduzir tempo
+                # de espera, usamos a validação de presença (não estritamente clicável).
+                require_clickable=not is_contaazul,
+            )
             # 2) Por texto/value do botão (Sign in e Entrar com mesma prioridade)
             if not login_button:
                 login_button = _find_button_by_text(driver, ["sign in", "entrar", "login", "acessar", "submit", "enviar"])
@@ -382,7 +426,15 @@ class OAuthFlow:
                 raise NoSuchElementException(
                     "Não foi possível encontrar o botão de login (Sign in / Entrar / submit)."
                 )
-            login_button.click()
+            # Clique robusto: garante scroll e tenta JS click como fallback.
+            try:
+                driver.execute_script(
+                    "arguments[0].scrollIntoView({block: 'center'});", login_button
+                )
+                time.sleep(0.2)
+                login_button.click()
+            except Exception:
+                driver.execute_script("arguments[0].click();", login_button)
             
             # Aguarda redirecionamento e captura o code.
             # Para Bling, não há etapa de código autenticador (2FA/MFA) neste fluxo,
@@ -395,17 +447,34 @@ class OAuthFlow:
                 print("   Se a tela pedir um código do autenticador, digite-o no navegador; vamos aguardar alguns minutos.")
                 max_wait = 180  # até 3 minutos para o usuário confirmar MFA
             start_time = time.time()
+            # Regra de detecção do redirect:
+            # - Se o browser estiver na mesma origem (scheme+host) do redirect_uri
+            # - e existir `code` na URL atual
+            # então consideramos que encontramos o code.
+            redirect_base = ""
+            try:
+                parsed_redirect = urlparse(redirect_uri)
+                redirect_base = f"{parsed_redirect.scheme}://{parsed_redirect.netloc}"
+            except Exception:
+                redirect_base = redirect_uri.split("?")[0]
             
             while time.time() - start_time < max_wait:
                 current_url = driver.current_url
                 
-                # Verifica se foi redirecionado para a redirect_uri com o code
-                if redirect_uri.split('?')[0] in current_url and 'code=' in current_url:
+                # Para Bling, é comum o usuário informar um redirect_uri "não canônico"
+                # (ex.: URL do endpoint de authorize em vez da callback real).
+                # Então, para Bling, detectamos apenas pela existência do `code=` na URL.
+                if "code=" in current_url and (
+                    is_bling or (redirect_base and redirect_base in current_url)
+                ):
                     parsed_url = urlparse(current_url)
+                    # Alguns provedores retornam parâmetros no fragment (#...)
                     query_params = parse_qs(parsed_url.query)
-                    if 'code' in query_params:
-                        code = query_params['code'][0]
-                        print(f"✅ Código OAuth coletado com sucesso!")
+                    fragment_params = parse_qs(parsed_url.fragment)
+                    code_params = query_params if "code" in query_params else fragment_params
+                    if "code" in code_params and code_params["code"]:
+                        code = code_params["code"][0]
+                        print("✅ Código OAuth coletado com sucesso!")
                         return code
                 
                 # Verifica se há tela de autorização

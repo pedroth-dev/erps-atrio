@@ -9,11 +9,11 @@ import requests
 import time
 
 from src.config.settings import TINY_TOKEN_URL, CONTAZUL_TOKEN_URL, BLING_TOKEN_URL
-from src.database.supabase_client import SupabaseClient
+from src.database.postgres_client import PostgresClient
 class TokenManager:
     """Gerencia tokens OAuth para conexões ERP."""
     
-    def __init__(self, db: SupabaseClient):
+    def __init__(self, db: PostgresClient):
         self.db = db
         self._oauth_flow = None
     
@@ -37,7 +37,7 @@ class TokenManager:
         Returns:
             Access token válido
         """
-        # Busca conexão usando método do SupabaseClient
+        # Busca conexão usando método do PostgresClient
         conn = self.db.get_erp_connection_by_id(connection_id)
         
         if not conn:

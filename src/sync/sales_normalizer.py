@@ -5,7 +5,7 @@ Processamento em lote para ser bem mais rápido (poucas requisições ao banco).
 import logging
 from typing import Optional, List, Dict, Any
 
-from src.database.supabase_client import SupabaseClient
+from src.database.postgres_client import PostgresClient
 from src.sync.tiny_normalizer import tiny_raw_to_customer, tiny_raw_to_sale
 from src.sync.contaazul_normalizer import contaazul_raw_to_customer, contaazul_raw_to_sale
 from src.sync.bling_normalizer import bling_raw_to_customer, bling_raw_to_sale
@@ -17,7 +17,7 @@ NORMALIZER_BATCH_SIZE = 100
 
 
 def process_pending_sales(
-    db: SupabaseClient,
+    db: PostgresClient,
     company_id: str,
     erp_type: str = "tiny",
     limit: int = 500,

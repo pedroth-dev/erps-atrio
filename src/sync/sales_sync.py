@@ -6,7 +6,7 @@ import logging
 from typing import List, Dict, Any
 from datetime import datetime, timezone
 
-from src.database.supabase_client import SupabaseClient
+from src.database.postgres_client import PostgresClient
 from src.auth.token_manager import TokenManager
 from src.integrations.tiny_client import TinyClient
 from src.integrations.contaazul_client import ContaAzulClient
@@ -22,7 +22,7 @@ STAGING_BATCH_SIZE = 100
 class SalesSync:
     """Gerencia a sincronização de vendas."""
     
-    def __init__(self, db: SupabaseClient, token_manager: TokenManager):
+    def __init__(self, db: PostgresClient, token_manager: TokenManager):
         self.db = db
         self.token_manager = token_manager
     

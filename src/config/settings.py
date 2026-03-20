@@ -7,10 +7,11 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# Supabase
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 ENCRYPTION_KEY = os.getenv("ENCRYPTION_KEY")  # Chave AES para criptografar credenciais
+
+# Postgres
+# Exemplo: postgresql://postgres:postgres@localhost:5432/atrio
+POSTGRES_URL = os.getenv("POSTGRES_URL")
 
 # URLs da API Tiny (fixas, não dependem de credenciais)
 TINY_AUTH_URL = "https://accounts.tiny.com.br/realms/tiny/protocol/openid-connect/auth"
@@ -44,8 +45,8 @@ BLING_TOKEN_URL = "https://www.bling.com.br/Api/v3/oauth/token"
 BLING_API_BASE_URL = "https://api.bling.com.br/Api/v3"
 
 # Validações
-if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
-    raise ValueError("SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY devem estar configurados no .env")
+if not POSTGRES_URL:
+    raise ValueError("POSTGRES_URL deve estar configurada no .env")
 
 if not ENCRYPTION_KEY:
     raise ValueError("ENCRYPTION_KEY deve estar configurada no .env para criptografar credenciais")

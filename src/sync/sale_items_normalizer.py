@@ -5,7 +5,7 @@ Processamento em lote para ser bem mais rápido.
 import logging
 from typing import Optional, List, Dict, Any
 
-from src.database.supabase_client import SupabaseClient
+from src.database.postgres_client import PostgresClient
 from src.sync.contaazul_normalizer import contaazul_extract_sale_item
 from src.sync.bling_normalizer import bling_extract_sale_item
 
@@ -51,7 +51,7 @@ def _extract_sale_item_tiny(raw_item: Dict[str, Any], sale_external_id: str) -> 
 
 
 def process_pending_sale_items(
-    db: SupabaseClient,
+    db: PostgresClient,
     company_id: str,
     erp_type: str = "tiny",
     limit: int = 500,
@@ -106,18 +106,13 @@ def process_pending_sale_items(
 
             try:
                 unique_sale_ids = list(set(item["sale_external_id"] for item in valid_rows))
-                sales_result = (
-                    db._core_sales()
-                    .select("id, external_id, issued_at, status")
-                    .eq("company_id", company_id)
-                    .eq("erp_type", erp_type)
-                    .in_("external_id", unique_sale_ids)
-                    .execute()
+                sales_result = db.get_sales_from_core_by_external_ids(
+                    company_id, erp_type, unique_sale_ids
                 )
 
                 sale_id_map: Dict[str, Optional[str]] = {}
                 sale_metadata: Dict[str, Dict] = {}
-                for sale in sales_result.data:
+                for sale in sales_result:
                     ext_id = str(sale["external_id"])
                     sale_id_map[ext_id] = sale["id"]
                     sale_metadata[ext_id] = {

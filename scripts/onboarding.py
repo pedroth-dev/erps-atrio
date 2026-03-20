@@ -12,7 +12,7 @@ from typing import Dict, Any
 root_dir = Path(__file__).parent.parent
 sys.path.insert(0, str(root_dir))
 
-from src.database.supabase_client import SupabaseClient
+from src.database.postgres_client import PostgresClient
 from src.auth.oauth_flow import OAuthFlow
 from src.config.settings import (
     CONTAZUL_CLIENT_ID,
@@ -57,7 +57,7 @@ def onboard_company(
     Returns:
         Dicionário com informações da empresa e conexão criadas
     """
-    db = SupabaseClient()
+    db = PostgresClient()
     
     print("=" * 60)
     print("🚀 INICIANDO ONBOARDING DE EMPRESA")
