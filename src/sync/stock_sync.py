@@ -88,7 +88,17 @@ class StockSync:
                 products = api_client.fetch_products(
                     situacao="A", data_alteracao=data_alteracao
                 )
-            stock_payloads = products
+            # Payload de produtos do Bling pode trazer HTML extenso em `descricaoCurta`.
+            # Para staging de estoque, removemos esse campo para reduzir volume sem
+            # afetar os dados essenciais de saldo/produto.
+            stock_payloads = []
+            for p in products:
+                if isinstance(p, dict):
+                    p_clean = dict(p)
+                    p_clean.pop("descricaoCurta", None)
+                    stock_payloads.append(p_clean)
+                else:
+                    stock_payloads.append(p)
         else:
             # Tiny: listar produtos e depois GET /estoque/{id} por produto
             tiny_client = TinyClient(access_token)

@@ -3,6 +3,7 @@ Gerenciador de tokens OAuth para ERPs.
 Verifica expiração, renova tokens e gerencia o ciclo de autenticação.
 """
 import base64
+import os
 from typing import Optional, Dict, Any
 from datetime import datetime, timedelta, timezone
 import requests
@@ -138,6 +139,21 @@ class TokenManager:
             )
             
             print(f"✅ Token renovado com sucesso para conexão {connection_id}")
+            # Depuração Tiny: confirma o que veio do endpoint de token (ativar TINY_INTEGRATION_DEBUG=1 no .env).
+            if erp_type == "tiny" and os.getenv("TINY_INTEGRATION_DEBUG", "0").strip().lower() in (
+                "1",
+                "true",
+                "yes",
+            ):
+                at = tokens.get("access_token") or ""
+                rt = tokens.get("refresh_token") or ""
+                preview = f"{at[:8]}...{at[-4:]}" if len(at) >= 12 else f"(len={len(at)})"
+                print(
+                    f"[TINY_DEBUG] refresh OK: expires_in={expires_in} "
+                    f"token_type={tokens.get('token_type')!r} "
+                    f"access_len={len(at)} refresh_len={len(rt)} "
+                    f"access_preview={preview}"
+                )
             return tokens
             
         except Exception as e:

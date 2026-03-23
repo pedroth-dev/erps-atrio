@@ -6,8 +6,6 @@ Mantemos as mesmas responsabilidades (cripto de credenciais e operações CRUD)
 para que o restante da aplicação não precise de alterações de lógica.
 """
 
-from __future__ import annotations
-
 import base64
 import hashlib
 import logging
@@ -481,6 +479,275 @@ class PostgresClient:
         )
         return str(ext_id) if ext_id is not None else ""
 
+    # ========= STAGING (Fase 1) — PEDIDOS =========
+
+    @staticmethod
+    def _staging_pedidos_table(erp_type: str) -> str:
+        if erp_type == "tiny":
+            return "stg_erps.stg_tiny_pedidos"
+        if erp_type == "contaazul":
+            return "stg_erps.stg_contaazul_pedidos"
+        if erp_type == "bling":
+            return "stg_erps.stg_bling_pedidos"
+        raise ValueError(f"erp_type inválido para staging de pedidos: {erp_type}")
+
+    def upsert_staging_pedidos_batch(
+        self,
+        company_id: str,
+        erp_type: str,
+        vendas_raw_list: List[Dict[str, Any]],
+    ) -> int:
+        """
+        Upsert em lote no staging de pedidos (stg_erps.stg_*_pedidos).
+
+        Insere/substitui o payload "geral" da venda em `raw_json`
+        mantendo `stg_status='pendente'`.
+        """
+        if not vendas_raw_list:
+            return 0
+
+        table_fqn = self._staging_pedidos_table(erp_type)
+
+        rows: List[Dict[str, Any]] = []
+        for sale in vendas_raw_list:
+            numero_pedido = self._sale_external_id_from_raw(sale)
+            if not numero_pedido:
+                continue
+            rows.append(
+                {
+                    "empresa_id": company_id,
+                    "numero_pedido": numero_pedido,
+                    "raw_json": sale,
+                    "stg_status": "pendente",
+                    "processado_em": None,
+                }
+            )
+
+        if not rows:
+            return 0
+
+        self._upsert_many(
+            table_fqn=table_fqn,
+            insert_cols=[
+                "empresa_id",
+                "numero_pedido",
+                "raw_json",
+                "stg_status",
+                "processado_em",
+            ],
+            rows=rows,
+            conflict_cols=["empresa_id", "numero_pedido"],
+            update_cols=["raw_json", "stg_status", "processado_em"],
+        )
+
+        return len(rows)
+
+    def get_staging_pedidos_by_numero_pedido(
+        self,
+        company_id: str,
+        erp_type: str,
+        numero_pedidos: List[str],
+    ) -> List[Dict[str, Any]]:
+        """
+        Busca registros do staging de pedidos pelo `numero_pedido`.
+        """
+        if not numero_pedidos:
+            return []
+
+        table_fqn = self._staging_pedidos_table(erp_type)
+        unique_ids = list({str(n) for n in numero_pedidos if n})
+        placeholders = ", ".join(["%s"] * len(unique_ids))
+
+        query = f"""
+            SELECT stg_id, empresa_id, numero_pedido, raw_json, stg_status, processado_em
+            FROM {table_fqn}
+            WHERE empresa_id = %s
+              AND numero_pedido IN ({placeholders})
+        """
+        params: tuple[Any, ...] = tuple([company_id] + unique_ids)
+        return self._fetchall(query, params)
+
+    def upsert_staging_pedidos_details_batch(
+        self,
+        company_id: str,
+        erp_type: str,
+        detalhes_raw_list: List[Dict[str, Any]],
+    ) -> int:
+        """
+        Substitui `raw_json` do staging pelos payloads "detalhados".
+
+        Mantém `stg_status='pendente'` para o ETL futuro operar com o registro atualizado.
+        """
+        if not detalhes_raw_list:
+            return 0
+
+        table_fqn = self._staging_pedidos_table(erp_type)
+
+        rows: List[Dict[str, Any]] = []
+        for sale_details in detalhes_raw_list:
+            numero_pedido = self._sale_external_id_from_raw(sale_details)
+            if not numero_pedido:
+                continue
+            rows.append(
+                {
+                    "empresa_id": company_id,
+                    "numero_pedido": numero_pedido,
+                    "raw_json": sale_details,
+                    "stg_status": "pendente",
+                    "processado_em": None,
+                }
+            )
+
+        if not rows:
+            return 0
+
+        self._upsert_many(
+            table_fqn=table_fqn,
+            insert_cols=[
+                "empresa_id",
+                "numero_pedido",
+                "raw_json",
+                "stg_status",
+                "processado_em",
+            ],
+            rows=rows,
+            conflict_cols=["empresa_id", "numero_pedido"],
+            update_cols=["raw_json", "stg_status", "processado_em"],
+        )
+        return len(rows)
+
+    def mark_staging_pedido_erro(
+        self,
+        company_id: str,
+        erp_type: str,
+        numero_pedido: str,
+        error_msg: Optional[str] = None,
+    ) -> None:
+        """
+        Marca um pedido no staging como erro (`stg_status='erro'`).
+        Observação: o schema atual não possui coluna para mensagem de erro.
+        """
+        table_fqn = self._staging_pedidos_table(erp_type)
+        now = datetime.now(timezone.utc)
+        query = f"""
+            UPDATE {table_fqn}
+            SET stg_status = 'erro',
+                processado_em = %s
+            WHERE empresa_id = %s
+              AND numero_pedido = %s
+        """
+        self._execute(query, (now, company_id, numero_pedido))
+
+    # ========= STAGING (Fase 1) — ITENS PEDIDOS =========
+
+    @staticmethod
+    def _staging_itens_pedidos_table(erp_type: str) -> str:
+        if erp_type == "tiny":
+            return "stg_erps.stg_tiny_itens_pedidos"
+        if erp_type == "contaazul":
+            return "stg_erps.stg_contaazul_itens_pedidos"
+        if erp_type == "bling":
+            return "stg_erps.stg_bling_itens_pedidos"
+        raise ValueError(f"erp_type inválido para staging de itens pedidos: {erp_type}")
+
+    def get_staging_pedidos_detailed_pending_without_itens(
+        self,
+        company_id: str,
+        erp_type: str,
+        limit: int = 100,
+    ) -> List[Dict[str, Any]]:
+        """
+        Seleciona pedidos detalhados pendentes (stg_status='pendente') que ainda
+        não possuem linha correspondente em stg_*_itens_pedidos.
+        """
+        pedidos_table = self._staging_pedidos_table(erp_type)
+        itens_table = self._staging_itens_pedidos_table(erp_type)
+
+        query = f"""
+            SELECT
+                p.stg_id,
+                p.empresa_id,
+                p.numero_pedido,
+                p.raw_json,
+                p.stg_status
+            FROM {pedidos_table} p
+            LEFT JOIN {itens_table} i
+              ON i.empresa_id = p.empresa_id
+             AND i.numero_pedido = p.numero_pedido
+            WHERE p.empresa_id = %s
+              AND p.stg_status = 'pendente'
+              AND i.numero_pedido IS NULL
+            ORDER BY p.criado_em DESC
+            LIMIT %s
+        """
+        return self._fetchall(query, (company_id, limit))
+
+    def upsert_staging_itens_pedidos_batch(
+        self,
+        company_id: str,
+        erp_type: str,
+        rows: List[Dict[str, Any]],
+    ) -> int:
+        """
+        Upsert em lote no staging de itens pedidos (stg_erps.stg_*_itens_pedidos).
+
+        Espera rows com chaves:
+          - numero_pedido: str
+          - raw_json: dict (chunk completo do detalhado)
+        """
+        if not rows:
+            return 0
+
+        table_fqn = self._staging_itens_pedidos_table(erp_type)
+
+        prepared: List[Dict[str, Any]] = []
+        for r in rows:
+            numero_pedido = r.get("numero_pedido")
+            raw_json = r.get("raw_json")
+            if not numero_pedido or raw_json is None:
+                continue
+            prepared.append(
+                {
+                    "empresa_id": company_id,
+                    "numero_pedido": str(numero_pedido),
+                    "raw_json": raw_json,
+                    "stg_status": "pendente",
+                    "processado_em": None,
+                }
+            )
+
+        if not prepared:
+            return 0
+
+        self._upsert_many(
+            table_fqn=table_fqn,
+            insert_cols=["empresa_id", "numero_pedido", "raw_json", "stg_status", "processado_em"],
+            rows=prepared,
+            conflict_cols=["empresa_id", "numero_pedido"],
+            update_cols=["raw_json", "stg_status", "processado_em"],
+        )
+        return len(prepared)
+
+    def mark_staging_itens_pedido_erro(
+        self,
+        company_id: str,
+        erp_type: str,
+        numero_pedido: str,
+    ) -> None:
+        """
+        Marca um pedido no staging de itens como erro (`stg_status='erro'`).
+        """
+        table_fqn = self._staging_itens_pedidos_table(erp_type)
+        now = datetime.now(timezone.utc)
+        query = f"""
+            UPDATE {table_fqn}
+            SET stg_status = 'erro',
+                processado_em = %s
+            WHERE empresa_id = %s
+              AND numero_pedido = %s
+        """
+        self._execute(query, (now, company_id, numero_pedido))
+
     def _staging_sales_table(self, erp_type: str) -> str:
         if erp_type == "bling":
             return "staging.bling_sales"
@@ -490,10 +757,10 @@ class PostgresClient:
 
     def _staging_stock_table(self, erp_type: str) -> str:
         if erp_type == "bling":
-            return "staging.bling_stock"
+            return "stg_erps.stg_bling_estoque"
         if erp_type == "contaazul":
-            return "staging.contaazul_stock"
-        return "staging.tiny_stock"
+            return "stg_erps.stg_contaazul_estoque"
+        return "stg_erps.stg_tiny_estoque"
 
     def _staging_sale_items_table(self, erp_type: str) -> str:
         if erp_type == "bling":
@@ -564,7 +831,13 @@ class PostgresClient:
 
     @staticmethod
     def _stock_product_external_id_from_raw(raw_data: Dict[str, Any]) -> str:
-        pid = raw_data.get("id")
+        pid = (
+            raw_data.get("id")
+            or raw_data.get("idProduto")
+            or raw_data.get("produto_id")
+            or raw_data.get("codigo")
+            or raw_data.get("sku")
+        )
         return str(pid) if pid is not None else ""
 
     def insert_staging_stock(
@@ -579,26 +852,22 @@ class PostgresClient:
 
         table_fqn = self._staging_stock_table(erp_type)
 
-        # Tiny: o id do produto costuma vir direto.
-        product_external_id = (
-            self._stock_product_external_id_from_raw(raw_data)
-            if erp_type in ("tiny",)
-            else self._stock_product_external_id_from_raw(raw_data)
-        )
+        numero_produto = self._stock_product_external_id_from_raw(raw_data)
 
         self._upsert_many(
             table_fqn=table_fqn,
-            insert_cols=["company_id", "product_external_id", "raw_data", "fetched_at"],
+            insert_cols=["empresa_id", "numero_produto", "raw_json", "stg_status", "processado_em"],
             rows=[
                 {
-                    "company_id": company_id,
-                    "product_external_id": product_external_id,
-                    "raw_data": raw_data,
-                    "fetched_at": fetched_at,
+                    "empresa_id": company_id,
+                    "numero_produto": numero_produto,
+                    "raw_json": raw_data,
+                    "stg_status": "pendente",
+                    "processado_em": None,
                 }
             ],
-            conflict_cols=["company_id", "product_external_id"],
-            update_cols=["raw_data", "fetched_at"],
+            conflict_cols=["empresa_id", "numero_produto"],
+            update_cols=["raw_json", "stg_status", "processado_em"],
         )
 
     def insert_staging_stock_batch(
@@ -614,22 +883,27 @@ class PostgresClient:
         table_fqn = self._staging_stock_table(erp_type)
         rows: List[Dict[str, Any]] = []
         for item in raw_data_list:
-            product_external_id = self._stock_product_external_id_from_raw(item)
+            numero_produto = self._stock_product_external_id_from_raw(item)
+            if not numero_produto:
+                continue
             rows.append(
                 {
-                    "company_id": company_id,
-                    "product_external_id": product_external_id,
-                    "raw_data": item,
-                    "fetched_at": fetched_at,
+                    "empresa_id": company_id,
+                    "numero_produto": numero_produto,
+                    "raw_json": item,
+                    "stg_status": "pendente",
+                    "processado_em": None,
                 }
             )
+        if not rows:
+            return 0
 
         self._upsert_many(
             table_fqn=table_fqn,
-            insert_cols=["company_id", "product_external_id", "raw_data", "fetched_at"],
+            insert_cols=["empresa_id", "numero_produto", "raw_json", "stg_status", "processado_em"],
             rows=rows,
-            conflict_cols=["company_id", "product_external_id"],
-            update_cols=["raw_data", "fetched_at"],
+            conflict_cols=["empresa_id", "numero_produto"],
+            update_cols=["raw_json", "stg_status", "processado_em"],
         )
         logger.debug("staging: %d estoque (upsert) [%s]", len(rows), erp_type)
         return len(rows)
@@ -696,8 +970,8 @@ class PostgresClient:
         query = f"""
             SELECT *
             FROM {table_fqn}
-            WHERE company_id = %s
-              AND processed_at IS NULL
+            WHERE empresa_id = %s
+              AND stg_status = 'pendente'
             LIMIT %s
         """
         return self._fetchall(query, (company_id, limit))

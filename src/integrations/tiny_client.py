@@ -3,11 +3,26 @@ Cliente para interagir com a API v3 do Tiny ERP.
 Gerencia requisições paginadas e tratamento de erros.
 """
 from typing import List, Dict, Any, Optional, Tuple
+import os
 import requests
 import time
 from datetime import datetime
 
 from src.config.settings import TINY_API_BASE_URL
+
+
+def _tiny_integration_debug() -> bool:
+    """Logs extras para depuração (desligar em produção). Ver TINY_INTEGRATION_DEBUG no .env."""
+    return os.getenv("TINY_INTEGRATION_DEBUG", "0").strip().lower() in ("1", "true", "yes")
+
+
+def _mask_token(token: Optional[str]) -> str:
+    if not token:
+        return "(vazio)"
+    t = str(token).strip()
+    if len(t) <= 12:
+        return f"(len={len(t)})"
+    return f"{t[:8]}...{t[-4:]} (len={len(t)})"
 
 
 class TinyClient:
@@ -42,8 +57,25 @@ class TinyClient:
         
         url = f"{self.base_url}/{endpoint}"
         response = requests.get(url, headers=self.headers, params=params)
+
+        if _tiny_integration_debug():
+            # Não logar o token completo — apenas preview mascarado.
+            print(
+                f"[TINY_DEBUG] GET {url} "
+                f"status={response.status_code} "
+                f"bearer={_mask_token(self.access_token)} "
+                f"params={params!r}"
+            )
         
         if response.status_code == 401:
+            if _tiny_integration_debug():
+                body_preview = (response.text or "")[:1200].replace("\n", " ")
+                www = response.headers.get("WWW-Authenticate") or ""
+                print(
+                    f"[TINY_DEBUG] 401 Unauthorized — "
+                    f"www_authenticate={www!r} "
+                    f"body_preview={body_preview!r}"
+                )
             raise ValueError("Token inválido ou expirado")
         
         # Atualiza rate limit a partir dos headers APÓS a requisição
@@ -60,7 +92,17 @@ class TinyClient:
             except (ValueError, TypeError):
                 pass
         
-        response.raise_for_status()
+        try:
+            response.raise_for_status()
+        except requests.HTTPError:
+            if _tiny_integration_debug():
+                body_preview = (response.text or "")[:1200].replace("\n", " ")
+                print(
+                    f"[TINY_DEBUG] HTTP erro {response.status_code} em {url} — "
+                    f"body_preview={body_preview!r}"
+                )
+            raise
+
         return response.json()
     
     def fetch_sales(
@@ -90,7 +132,7 @@ class TinyClient:
             params["dataFinal"] = data_final
         
         periodo = f" ({data_inicial} a {data_final})" if (data_inicial and data_final) else ""
-        print(f"📊 API Tiny: buscando vendas{periodo}...")
+        print(f"API Tiny: buscando vendas{periodo}...")
         
         t_start = time.perf_counter()
         num_requests = 0
@@ -110,15 +152,15 @@ class TinyClient:
                 offset += limit
                 time.sleep(0.5)
             except Exception as e:
-                print(f"❌ API vendas: {e}")
+                print(f"Erro API vendas: {e}")
                 break
         
         elapsed = time.perf_counter() - t_start
         if num_requests > 0:
             avg = elapsed / num_requests
-            print(f"   → {len(all_sales)} vendas em {elapsed:.1f}s | {num_requests} requisição(ões) | ~{avg:.2f}s/requisição")
+            print(f"   -> {len(all_sales)} vendas em {elapsed:.1f}s | {num_requests} requisição(ões) | ~{avg:.2f}s/requisição")
         else:
-            print(f"   → {len(all_sales)} vendas obtidas")
+            print(f"   -> {len(all_sales)} vendas obtidas")
         return all_sales
     
     def fetch_products(
@@ -143,7 +185,7 @@ class TinyClient:
         offset = 0
 
         msg = "produtos ativos" if not data_alteracao else f"produtos alterados desde {data_alteracao}"
-        print(f"📦 API Tiny: buscando {msg}...")
+        print(f"API Tiny: buscando {msg}...")
 
         t_start = time.perf_counter()
         num_requests = 0
@@ -164,15 +206,15 @@ class TinyClient:
                 offset += limit
                 time.sleep(0.5)
             except Exception as e:
-                print(f"❌ API produtos: {e}")
+                print(f"Erro API produtos: {e}")
                 break
 
         elapsed = time.perf_counter() - t_start
         if num_requests > 0:
             avg = elapsed / num_requests
-            print(f"   → {len(all_products)} produtos em {elapsed:.1f}s | {num_requests} requisição(ões) | ~{avg:.2f}s/requisição")
+            print(f"   -> {len(all_products)} produtos em {elapsed:.1f}s | {num_requests} requisição(ões) | ~{avg:.2f}s/requisição")
         else:
-            print(f"   → {len(all_products)} produtos obtidos")
+            print(f"   -> {len(all_products)} produtos obtidos")
         return all_products
 
     def fetch_product_stock(self, product_id: int) -> Optional[Dict[str, Any]]:
@@ -194,7 +236,7 @@ class TinyClient:
                 return None
             raise
         except Exception as e:
-            print(f"❌ Erro ao buscar estoque do produto {product_id}: {e}")
+            print(f"Erro ao buscar estoque do produto {product_id}: {e}")
             return None
 
     def fetch_sale_details(self, sale_id: str) -> Optional[Dict[str, Any]]:
@@ -216,7 +258,7 @@ class TinyClient:
                 return None
             raise
         except Exception as e:
-            print(f"❌ Erro ao buscar detalhes da venda {sale_id}: {e}")
+            print(f"Erro ao buscar detalhes da venda {sale_id}: {e}")
             return None
 
     def fetch_sale_details_timed(self, sale_id: str) -> Tuple[Optional[Dict[str, Any]], float]:
@@ -235,5 +277,5 @@ class TinyClient:
             raise
         except Exception as e:
             elapsed = time.perf_counter() - t0
-            print(f"❌ Erro ao buscar detalhes da venda {sale_id}: {e}")
+            print(f"Erro ao buscar detalhes da venda {sale_id}: {e}")
             return None, elapsed

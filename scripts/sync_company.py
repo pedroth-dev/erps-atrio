@@ -24,13 +24,16 @@ from src.auth.token_manager import TokenManager
 from src.sync.sales_sync import SalesSync
 from src.sync.stock_sync import StockSync
 from src.sync.checkpoints import get_sync_start
-from src.sync.sales_normalizer import process_pending_sales
-from src.sync.sale_items_collector import SaleItemsCollector
-from src.sync.sale_items_normalizer import process_pending_sale_items
-from src.sync.stock_normalizer import process_pending_stock
+from src.sync.items_pedidos_staging import stage_items_pedidos_fase1
 
 
-def sync_company(company_id: str, erp_type: str = "tiny", sync_sales: bool = True, sync_stock: bool = True):
+def sync_company(
+    company_id: str,
+    erp_type: str = "tiny",
+    sync_sales: bool = True,
+    sync_items: bool = False,
+    sync_stock: bool = True,
+):
     """
     Sincroniza dados de uma empresa.
     
@@ -55,6 +58,11 @@ def sync_company(company_id: str, erp_type: str = "tiny", sync_sales: bool = Tru
     if not connection.get("is_active"):
         raise ValueError(f"Conexão ERP está inativa para empresa {company_id}. Não é possível sincronizar.")
     
+    # Mantemos ETL/normalização desativados na fase 1.
+    if not sync_sales and not sync_items:
+        if not sync_stock:
+            raise ValueError("Informe pelo menos uma opção de sync (sales/items/stock).")
+
     connection_id = connection["id"]
     
     # Sincroniza vendas: a cada 24h puxa últimos 30 dias (refresh); senão incremental
@@ -72,32 +80,16 @@ def sync_company(company_id: str, erp_type: str = "tiny", sync_sales: bool = Tru
             erp_type=erp_type,
             is_full_refresh=is_full_refresh,
         )
-        # Normalizer: staging → core.customers + core.sales (Tiny e Conta Azul)
-        n, sale_external_ids = process_pending_sales(db, company_id, erp_type, limit=500)
-        if n > 0:
-            print(f"📋 Normalizado: {n} vendas → core.customers / core.sales")
 
-        # Coleta itens apenas das vendas recém-normalizadas (incremental)
-        collector = SaleItemsCollector(db, token_manager)
-        collector.collect_sale_items(
-            company_id, connection_id, erp_type, batch_size=100,
-            sale_external_ids=sale_external_ids,
-        )
+    # (fase 1) não executa normalização ETL e nem coleta de itens/estoque
 
-        # Normaliza itens das vendas recém-normalizadas
-        items_normalized = process_pending_sale_items(
-            db, company_id, erp_type, limit=500, sale_external_ids=sale_external_ids
-        )
-        if items_normalized > 0:
-            print(f"📦 Normalizado: {items_normalized} itens → core.sale_items")
-    
-    # Sincroniza estoque
+    if sync_items:
+        result = stage_items_pedidos_fase1(db=db, company_id=company_id, erp_type=erp_type)
+        print(f"📋 Itens (fase1) concluído: {result}")
+
     if sync_stock:
         stock_sync = StockSync(db, token_manager)
         stock_sync.sync_company_stock(company_id, connection_id, erp_type=erp_type)
-        n_stock = process_pending_stock(db, company_id, erp_type, limit=500)
-        if n_stock > 0:
-            print(f"📦 Normalizado: {n_stock} estoques → core.stock")
 
     print("\n" + "=" * 60)
     print("✨ SINCRONIZAÇÃO CONCLUÍDA!")
@@ -162,28 +154,39 @@ if __name__ == "__main__":
             print("Opção inválida. Digite o número do ERP (1 a {}) ou 0 para cancelar.".format(len(connections)))
 
     print("\nO que deseja sincronizar?")
-    print("  1. Apenas vendas")
-    print("  2. Apenas estoque")
-    print("  3. Vendas e estoque")
+    print("  1. Apenas vendas (fase 1)")
+    print("  2. Apenas itens de pedidos (fase 1)")
+    print("  3. Apenas estoque (fase 1, staging bruto)")
+    print("  4. Vendas + itens de pedidos (fase 1)")
     while True:
-        tipo = input("Opção (1, 2 ou 3) [3]: ").strip() or "3"
+        tipo = input("Opção (1, 2, 3 ou 4) [4]: ").strip() or "4"
         if tipo == "1":
-            sync_sales, sync_stock = True, False
+            sync_sales, sync_items, sync_stock = True, False, False
             break
         if tipo == "2":
-            sync_sales, sync_stock = False, True
+            sync_sales, sync_items, sync_stock = False, True, False
             break
         if tipo == "3":
-            sync_sales, sync_stock = True, True
+            sync_sales, sync_items, sync_stock = False, False, True
             break
-        print("Opção inválida. Digite 1, 2 ou 3.")
+        if tipo == "4":
+            sync_sales, sync_items, sync_stock = True, True, False
+            break
+        print("Opção inválida. Digite 1, 2, 3 ou 4.")
 
     print(f"\nEmpresa: {company_name}")
     print(f"ERP: {erp_type}")
-    print(f"Sincronizar: {'Vendas' if sync_sales else ''} {'Estoque' if sync_stock else ''}")
+    selected = []
+    if sync_sales:
+        selected.append("Vendas")
+    if sync_items:
+        selected.append("ItensPedidos")
+    if sync_stock:
+        selected.append("Estoque")
+    print(f"Sincronizar: {', '.join(selected) if selected else 'Nada'}")
 
     try:
-        sync_company(company_id, erp_type, sync_sales, sync_stock)
+        sync_company(company_id, erp_type, sync_sales, sync_items=sync_items, sync_stock=sync_stock)
     except Exception as e:
         print(f"\n❌ Erro na sincronização: {e}")
         import traceback

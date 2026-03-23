@@ -1,8 +1,13 @@
 """
-Sincronização de vendas (Tiny e Conta Azul) para o Supabase.
-Coleta dados da API e insere no staging em lotes.
+Sincronização de vendas (Tiny/Conta Azul/Bling) para o staging (fase 1).
+
+Fluxo:
+1) Chama endpoint geral de vendas e upserta no staging de pedidos (stg_erps.stg_*_pedidos)
+2) Para cada venda do staging, chama endpoint detalhado e substitui o raw_json no mesmo registro
+3) Atualiza checkpoints no fim (por integração)
 """
 import logging
+import os
 from typing import List, Dict, Any
 from datetime import datetime, timezone
 
@@ -17,6 +22,18 @@ logger = logging.getLogger(__name__)
 
 # Tamanho do lote para inserção no Supabase (reduz requisições e melhora tempo)
 STAGING_BATCH_SIZE = 100
+# A cada N pedidos detalhados, imprime progresso no console (ajustável via .env)
+_DETAIL_LOG_EVERY = max(1, int(os.getenv("SALES_DETAIL_LOG_EVERY", "50")))
+# Quantos erros de detalhe mostrar com numero_pedido (evita spam)
+_DETAIL_ERR_LOG_MAX = max(0, int(os.getenv("SALES_DETAIL_ERR_LOG_MAX", "10")))
+
+
+def _numero_pedido_from_sale_raw(db: PostgresClient, erp_type: str, raw: Dict[str, Any]) -> str:
+    """
+    Extrai o identificador lógico da venda para ser usado como `numero_pedido` no staging.
+    """
+    # Mantém compatibilidade com as chaves já utilizadas nos normalizadores legados.
+    return db._sale_external_id_from_raw(raw)
 
 
 class SalesSync:
@@ -35,32 +52,17 @@ class SalesSync:
         erp_type: str = None,
         is_full_refresh: bool = False,
     ) -> int:
-        """
-        Sincroniza vendas de uma empresa.
-        
-        Args:
-            company_id: ID da empresa
-            connection_id: ID da conexão ERP
-            data_inicial: Data inicial (YYYY-MM-DD) - opcional; use get_sync_start() para incremental/30 dias
-            data_final: Data final (YYYY-MM-DD) - opcional
-            erp_type: Tipo do ERP (tiny, bling, etc.); se None, obtido da conexão (para checkpoint)
-            is_full_refresh: Se True, atualiza last_full_refresh_at no checkpoint (sync dos últimos 30 dias)
-        
-        Returns:
-            Número de vendas sincronizadas
-        """
-        print(f"\n🛒 Iniciando sincronização de vendas...")
-        
-        # Verifica se conexão está ativa (conforme doc_funcionamento_geral.md)
+        print("\nIniciando sincronização de vendas (fase 1 staging de pedidos)...")
+
+        # Verifica se conexão está ativa
         connection = self.db.get_erp_connection_by_id(connection_id)
         if not connection or not connection.get("is_active"):
             raise ValueError(f"Conexão {connection_id} não está ativa")
+
         erp_type = erp_type or connection.get("erp_type") or "tiny"
 
-        # Obtém token válido (passa pelo token_manager conforme doc)
         access_token = self.token_manager.get_valid_token(connection_id, erp_type=erp_type)
 
-        # Cliente de API conforme ERP
         if erp_type == "contaazul":
             api_client = ContaAzulClient(access_token)
         elif erp_type == "bling":
@@ -68,12 +70,13 @@ class SalesSync:
         else:
             api_client = TinyClient(access_token)
 
-        # Busca vendas
+        # 1) Endpoint geral: lista resumos de vendas/pedidos
         sales = api_client.fetch_sales(data_inicial, data_final)
+        if not sales:
+            print("Nenhuma venda encontrada")
+            return 0
 
-        # Para Bling, após obter todas as vendas, resolvemos as situações (status)
-        # via endpoint /situacoes/{idSituacao}, uma vez por ID distinto,
-        # e mesclamos essa informação no campo "situacao" de cada venda.
+        # 1.1) (Opcional) Bling: enriquecer situacao via endpoint /situacoes
         if erp_type == "bling" and sales:
             situacao_ids = set()
             for s in sales:
@@ -93,36 +96,113 @@ class SalesSync:
                         continue
                     resolved = situacoes_map.get(sid)
                     if isinstance(resolved, dict):
-                        # Mescla para manter id/valor originais e adicionar nome/cor/etc.
-                        merged = {**situ, **resolved}
-                        s["situacao"] = merged
+                        s["situacao"] = {**situ, **resolved}
 
-        if not sales:
-            print("⚠️  Nenhuma venda encontrada")
-            return 0
+        # 2) Upsert do endpoint geral no staging de pedidos
+        numero_pedidos: List[str] = []
+        for s in sales:
+            numero_pedido = _numero_pedido_from_sale_raw(self.db, erp_type, s)
+            if numero_pedido:
+                numero_pedidos.append(numero_pedido)
+        numero_pedidos = list({str(n) for n in numero_pedidos if n})
 
-        # Insere no staging em lotes
-        fetched_at = datetime.now(timezone.utc)
-        total = len(sales)
         inserted_count = 0
+        total = len(sales)
         num_batches = (total + STAGING_BATCH_SIZE - 1) // STAGING_BATCH_SIZE
-
-        print(f"📥 Vendas: {total} registros em {num_batches} lote(s)")
+        print(f"Pedidos gerais: {total} venda(s) em {num_batches} lote(s)")
 
         for i in range(0, total, STAGING_BATCH_SIZE):
             batch = sales[i : i + STAGING_BATCH_SIZE]
             batch_num = (i // STAGING_BATCH_SIZE) + 1
             try:
-                n = self.db.insert_staging_sales_batch(company_id, batch, fetched_at, erp_type=erp_type)
+                n = self.db.upsert_staging_pedidos_batch(company_id, erp_type, batch)
                 inserted_count += n
-                print(f"   [{batch_num}/{num_batches}] {n} vendas ✓")
+                print(f"   [{batch_num}/{num_batches}] {n} pedido(s)")
             except Exception as e:
                 print(f"   [{batch_num}/{num_batches}] Erro: {e}")
                 logger.exception("Erro lote %d vendas", batch_num)
 
-        self.db.update_last_sync(connection_id)
+        if not numero_pedidos:
+            print("Nenhum numero_pedido foi extraído; abortando fase detalhada.")
+            return inserted_count
+
+        # 3) Busca no staging e substitui pelo detalhado
+        staging_rows = self.db.get_staging_pedidos_by_numero_pedido(company_id, erp_type, numero_pedidos)
+
+        total_detalhar = len(staging_rows)
+        print(f"Pedidos para detalhar: {total_detalhar}")
+        print(
+            f"   (progresso a cada {_DETAIL_LOG_EVERY} pedidos; "
+            f"erros com numero_pedido: até {_DETAIL_ERR_LOG_MAX}; "
+            f"env SALES_DETAIL_LOG_EVERY / SALES_DETAIL_ERR_LOG_MAX)"
+        )
+
+        detailed_buffer: List[Dict[str, Any]] = []
+        processed_details = 0
+        erro_details = 0
+
+        def _flush_details():
+            nonlocal detailed_buffer, processed_details
+            if not detailed_buffer:
+                return
+            n = len(detailed_buffer)
+            self.db.upsert_staging_pedidos_details_batch(company_id, erp_type, detailed_buffer)
+            processed_details += n
+            print(
+                f"   [detalhe lote] +{n} substituições no staging "
+                f"(total detalhados gravados={processed_details})"
+            )
+            detailed_buffer = []
+
+        for idx, row in enumerate(staging_rows, start=1):
+            numero_pedido = str(row.get("numero_pedido") or "")
+            if not numero_pedido:
+                continue
+
+            if erp_type == "tiny":
+                details, _elapsed = api_client.fetch_sale_details_timed(numero_pedido)
+            elif erp_type == "contaazul":
+                details, _elapsed = api_client.fetch_sale_details_timed(numero_pedido)
+            else:
+                details, _elapsed = api_client.fetch_sale_details_timed(numero_pedido)
+
+            if not details:
+                self.db.mark_staging_pedido_erro(company_id, erp_type, numero_pedido)
+                erro_details += 1
+                if erro_details <= _DETAIL_ERR_LOG_MAX:
+                    print(f"   [detalhe ERRO] numero_pedido={numero_pedido} (sem payload)")
+                continue
+
+            detailed_buffer.append(details)
+            if len(detailed_buffer) >= STAGING_BATCH_SIZE:
+                _flush_details()
+
+            # Progresso: a cada N itens e no último
+            if idx % _DETAIL_LOG_EVERY == 0 or idx == total_detalhar:
+                ok_ate_agora = idx - erro_details
+                pendente_buffer = len(detailed_buffer)
+                print(
+                    f"   [detalhe] {idx}/{total_detalhar} "
+                    f"| ok={ok_ate_agora} | erros={erro_details} "
+                    f"| buffer_pendente_gravar={pendente_buffer}"
+                )
+
+        # flush do que sobrou
+        _flush_details()
+
+        # 4) Atualiza checkpoints ao final
         update_checkpoint(self.db, company_id, erp_type, "sales", set_full_refresh=is_full_refresh)
 
-        print(f"✅ Vendas: {inserted_count} inseridas no staging")
-        logger.info("Vendas: %d inseridas no staging (company=%s)", inserted_count, company_id)
+        print(
+            f"Fase1 vendas: upsert gerais={inserted_count}, detalhados_substituídos={processed_details}, erros={erro_details}"
+        )
+        logger.info(
+            "Fase1 vendas (company=%s, erp=%s): gerais=%d detalhados=%d erros=%d",
+            company_id,
+            erp_type,
+            inserted_count,
+            processed_details,
+            erro_details,
+        )
+
         return inserted_count

@@ -82,7 +82,7 @@ class BlingClient:
             if (data_inicial and data_final)
             else ""
         )
-        print(f"📊 API Bling: buscando vendas{periodo}...")
+        print(f"API Bling: buscando vendas{periodo}...")
 
         t_start = time.perf_counter()
         num_requests = 0
@@ -104,18 +104,18 @@ class BlingClient:
                 page += 1
                 time.sleep(0.3)
             except Exception as e:
-                print(f"❌ API Bling vendas: {e}")
+                print(f"Erro API Bling vendas: {e}")
                 break
 
         elapsed = time.perf_counter() - t_start
         if num_requests > 0:
             avg = elapsed / num_requests
             print(
-                f"   → {len(all_sales)} vendas em {elapsed:.1f}s | "
-                f"{num_requests} requisição(ões) | ~{avg:.2f}s/requisição"
+                f"   -> {len(all_sales)} vendas em {elapsed:.1f}s | "
+                f"{num_requests} requisicoes | ~{avg:.2f}s/requisicao"
             )
         else:
-            print(f"   → {len(all_sales)} vendas obtidas")
+            print(f"   -> {len(all_sales)} vendas obtidas")
         return all_sales
 
     def fetch_products(
@@ -146,7 +146,7 @@ class BlingClient:
             params["dataAlteracao"] = data_alteracao
 
         msg = "produtos ativos" if not data_alteracao else f"produtos alterados desde {data_alteracao}"
-        print(f"📦 API Bling: buscando {msg}...")
+        print(f"API Bling: buscando {msg}...")
 
         t_start = time.perf_counter()
         num_requests = 0
@@ -166,18 +166,18 @@ class BlingClient:
                 page += 1
                 time.sleep(0.3)
             except Exception as e:
-                print(f"❌ API Bling produtos: {e}")
+                print(f"Erro API Bling produtos: {e}")
                 break
 
         elapsed = time.perf_counter() - t_start
         if num_requests > 0:
             avg = elapsed / num_requests
             print(
-                f"   → {len(all_products)} produtos em {elapsed:.1f}s | "
-                f"{num_requests} requisição(ões) | ~{avg:.2f}s/requisição"
+                f"   -> {len(all_products)} produtos em {elapsed:.1f}s | "
+                f"{num_requests} requisicoes | ~{avg:.2f}s/requisicao"
             )
         else:
-            print(f"   → {len(all_products)} produtos obtidos")
+            print(f"   -> {len(all_products)} produtos obtidos")
         return all_products
 
     def fetch_sale_details(self, sale_id: str) -> Optional[Dict[str, Any]]:
@@ -199,7 +199,7 @@ class BlingClient:
                 return None
             raise
         except Exception as e:
-            print(f"❌ Erro ao buscar detalhes da venda Bling {sale_id}: {e}")
+            print(f"Erro ao buscar detalhes da venda Bling {sale_id}: {e}")
             return None
 
     def fetch_sale_details_timed(
@@ -240,7 +240,7 @@ class BlingClient:
                 if isinstance(situacao, dict):
                     result[sid] = situacao
             except Exception as e:
-                print(f"❌ API Bling situacao {sid}: {e}")
+                print(f"Erro API Bling situacao {sid}: {e}")
                 continue
 
         return result

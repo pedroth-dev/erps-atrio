@@ -77,7 +77,7 @@ class ContaAzulClient:
             if (data_inicial and data_final)
             else ""
         )
-        print(f"📊 API Conta Azul: buscando vendas{periodo}...")
+        print(f"API Conta Azul: buscando vendas{periodo}...")
 
         t_start = time.perf_counter()
         num_requests = 0
@@ -109,34 +109,79 @@ class ContaAzulClient:
         if num_requests > 0:
             avg = elapsed / num_requests
             print(
-                f"   → {len(all_sales)} vendas em {elapsed:.1f}s | "
-                f"{num_requests} requisição(ões) | ~{avg:.2f}s/requisição"
+                f"   -> {len(all_sales)} vendas em {elapsed:.1f}s | "
+                f"{num_requests} requisicoes | ~{avg:.2f}s/requisicao"
             )
         else:
-            print(f"   → {len(all_sales)} vendas obtidas")
+            print(f"   -> {len(all_sales)} vendas obtidas")
 
         return all_sales
 
     def fetch_sale_items(self, sale_id: str) -> Optional[List[Dict[str, Any]]]:
         """
-        Retorna os itens de uma venda específica via GET /v1/venda/{id_venda}/itens.
+        Retorna todos os itens de uma venda específica via GET /v1/venda/{id_venda}/itens
+        com paginação.
 
         Args:
             sale_id: ID da venda no Conta Azul.
 
         Returns:
-            Lista de itens ou None se a venda não existir.
+            Lista completa de itens paginados ou None se a venda não existir.
         """
-        try:
-            data = self._make_request("GET", f"/v1/venda/{sale_id}/itens")
-            items = data.get("itens") or data.get("items") or data
-            if isinstance(items, list):
-                return items
-            return None
-        except requests.exceptions.HTTPError as e:
-            if e.response is not None and e.response.status_code == 404:
-                return None
-            raise
+        return self.fetch_sale_items_paginated(sale_id)
+
+    def fetch_sale_items_paginated(
+        self,
+        sale_id: str,
+        page_size: int = 200,
+        max_pages: int = 200,
+    ) -> Optional[List[Dict[str, Any]]]:
+        """
+        Busca itens da venda com paginação completa.
+
+        Endpoint:
+          GET /v1/venda/{id_venda}/itens?pagina=N&tamanho_pagina=M
+        """
+        all_items: List[Dict[str, Any]] = []
+        page = 1
+        page_size = max(10, min(int(page_size), 1000))
+        max_pages = max(1, int(max_pages))
+
+        while page <= max_pages:
+            try:
+                data = self._make_request(
+                    "GET",
+                    f"/v1/venda/{sale_id}/itens",
+                    params={"pagina": page, "tamanho_pagina": page_size},
+                )
+            except requests.exceptions.HTTPError as e:
+                if e.response is not None and e.response.status_code == 404:
+                    return None
+                raise
+
+            page_items = data.get("itens") or data.get("items") or []
+            if not isinstance(page_items, list):
+                page_items = []
+
+            if not page_items:
+                break
+
+            all_items.extend(page_items)
+
+            total_items = data.get("itens_totais") or data.get("totalItems") or data.get("total_itens")
+            if total_items is not None:
+                try:
+                    if len(all_items) >= int(total_items):
+                        break
+                except (TypeError, ValueError):
+                    pass
+
+            if len(page_items) < page_size:
+                break
+
+            page += 1
+
+        return all_items
 
     def fetch_sale_items_timed(self, sale_id: str) -> Tuple[Optional[List[Dict[str, Any]]], float]:
         """
@@ -144,10 +189,36 @@ class ContaAzulClient:
         """
         t0 = time.perf_counter()
         try:
-            items = self.fetch_sale_items(sale_id)
+            items = self.fetch_sale_items_paginated(sale_id)
             return items, time.perf_counter() - t0
         except Exception:
             return None, time.perf_counter() - t0
+
+    # ========== VENDAS DETALHADAS ==========
+
+    def fetch_sale_details(self, sale_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Retorna os detalhes completos da venda pelo ID.
+
+        Endpoint (documentação Conta Azul v1):
+          GET /v1/venda/{id}
+        """
+        try:
+            return self._make_request("GET", f"/v1/venda/{sale_id}")
+        except requests.exceptions.HTTPError as e:
+            if e.response is not None and e.response.status_code == 404:
+                return None
+            raise
+        except Exception:
+            return None
+
+    def fetch_sale_details_timed(self, sale_id: str) -> Tuple[Optional[Dict[str, Any]], float]:
+        """
+        Como `fetch_sale_details`, mas retorna também o tempo de requisição (em segundos).
+        """
+        t0 = time.perf_counter()
+        details = self.fetch_sale_details(sale_id)
+        return details, time.perf_counter() - t0
 
     # ========== PRODUTOS / ESTOQUE ==========
 
@@ -175,7 +246,7 @@ class ContaAzulClient:
         all_products: List[Dict[str, Any]] = []
         page = 1
 
-        print("📦 API Conta Azul: buscando produtos...")
+        print("API Conta Azul: buscando produtos...")
 
         t_start = time.perf_counter()
         num_requests = 0
@@ -215,11 +286,11 @@ class ContaAzulClient:
         if num_requests > 0:
             avg = elapsed / num_requests
             print(
-                f"   → {len(all_products)} produtos em {elapsed:.1f}s | "
-                f"{num_requests} requisição(ões) | ~{avg:.2f}s/requisição"
+                f"   -> {len(all_products)} produtos em {elapsed:.1f}s | "
+                f"{num_requests} requisicoes | ~{avg:.2f}s/requisicao"
             )
         else:
-            print(f"   → {len(all_products)} produtos obtidos")
+            print(f"   -> {len(all_products)} produtos obtidos")
 
         return all_products
 

@@ -29,14 +29,11 @@ def _get_redis():
 
 
 def _sync_tiny_sales_impl(company_id: str) -> int:
-    """Lógica de sync vendas Tiny (incremental) + normalizer staging → core + itens."""
+    """Lógica de sync vendas Tiny (fase 1 staging de pedidos)."""
     from src.database.postgres_client import PostgresClient
     from src.auth.token_manager import TokenManager
     from src.sync.sales_sync import SalesSync
     from src.sync.checkpoints import get_sync_start
-    from src.sync.sales_normalizer import process_pending_sales
-    from src.sync.sale_items_collector import SaleItemsCollector
-    from src.sync.sale_items_normalizer import process_pending_sale_items
 
     db = PostgresClient()
     token_manager = TokenManager(db)
@@ -54,18 +51,6 @@ def _sync_tiny_sales_impl(company_id: str) -> int:
         erp_type="tiny",
         is_full_refresh=is_full_refresh,
     )
-    _, sale_external_ids = process_pending_sales(db, company_id, "tiny", limit=500)
-
-    # Coleta itens apenas das vendas recém-normalizadas (incremental)
-    collector = SaleItemsCollector(db, token_manager)
-    collector.collect_sale_items(
-        company_id, connection_id, "tiny", batch_size=100,
-        sale_external_ids=sale_external_ids,
-    )
-    process_pending_sale_items(
-        db, company_id, "tiny", limit=500, sale_external_ids=sale_external_ids
-    )
-    
     return count
 
 
@@ -87,14 +72,11 @@ def _sync_tiny_stock_impl(company_id: str) -> int:
 
 
 def _sync_contaazul_sales_impl(company_id: str) -> int:
-    """Lógica de sync vendas Conta Azul + normalizer + itens."""
+    """Lógica de sync vendas Conta Azul (fase 1 staging de pedidos)."""
     from src.database.postgres_client import PostgresClient
     from src.auth.token_manager import TokenManager
     from src.sync.sales_sync import SalesSync
     from src.sync.checkpoints import get_sync_start
-    from src.sync.sales_normalizer import process_pending_sales
-    from src.sync.sale_items_collector import SaleItemsCollector
-    from src.sync.sale_items_normalizer import process_pending_sale_items
 
     db = PostgresClient()
     token_manager = TokenManager(db)
@@ -112,17 +94,6 @@ def _sync_contaazul_sales_impl(company_id: str) -> int:
         erp_type="contaazul",
         is_full_refresh=is_full_refresh,
     )
-    _, sale_external_ids = process_pending_sales(db, company_id, "contaazul", limit=500)
-
-    collector = SaleItemsCollector(db, token_manager)
-    collector.collect_sale_items(
-        company_id, connection_id, "contaazul", batch_size=100,
-        sale_external_ids=sale_external_ids,
-    )
-    process_pending_sale_items(
-        db, company_id, "contaazul", limit=500, sale_external_ids=sale_external_ids
-    )
-
     return count
 
 
@@ -141,6 +112,32 @@ def _sync_contaazul_stock_impl(company_id: str) -> int:
 
     stock_sync = StockSync(db, token_manager)
     return stock_sync.sync_company_stock(company_id, connection_id, erp_type="contaazul")
+
+
+def _sync_bling_sales_impl(company_id: str) -> int:
+    """Lógica de sync vendas Bling (fase 1 staging de pedidos)."""
+    from src.database.postgres_client import PostgresClient
+    from src.auth.token_manager import TokenManager
+    from src.sync.sales_sync import SalesSync
+    from src.sync.checkpoints import get_sync_start
+
+    db = PostgresClient()
+    token_manager = TokenManager(db)
+    connection = db.get_erp_connection(company_id, "bling")
+    if not connection or not connection.get("is_active"):
+        raise ValueError(f"Conexão Bling não encontrada ou inativa para empresa {company_id}")
+    connection_id = connection["id"]
+
+    data_inicial, data_final, is_full_refresh = get_sync_start(db, company_id, "bling", "sales")
+    sales_sync = SalesSync(db, token_manager)
+    return sales_sync.sync_company_sales(
+        company_id,
+        connection_id,
+        data_inicial=data_inicial,
+        data_final=data_final,
+        erp_type="bling",
+        is_full_refresh=is_full_refresh,
+    )
 
 
 @app.task(bind=True, queue="tiny", max_retries=3, default_retry_delay=60)
@@ -219,6 +216,25 @@ def sync_contaazul_stock(self, company_id: str):
             pass
 
 
+@app.task(bind=True, queue="bling", max_retries=3, default_retry_delay=60)
+def sync_bling_sales(self, company_id: str):
+    """Sincroniza vendas Bling (fase 1 staging de pedidos)."""
+    task_id = f"sync_bling_sales_{company_id}"
+    r = _get_redis()
+    if r.get(task_id):
+        return
+    r.setex(task_id, SYNC_LOCK_TTL, "running")
+    try:
+        _sync_bling_sales_impl(company_id)
+    except Exception as exc:
+        raise self.retry(exc=exc)
+    finally:
+        try:
+            r.delete(task_id)
+        except Exception:
+            pass
+
+
 @app.task(queue="default")
 def dispatch_all():
     """Scheduler: enfileira uma tarefa por (empresa, ERP, tipo) para todas as empresas ativas."""
@@ -236,13 +252,10 @@ def dispatch_all():
             erp = conn["erp_type"]
             if erp == "tiny":
                 sync_tiny_sales.delay(company_id)
-                sync_tiny_stock.delay(company_id)
             elif erp == "contaazul":
                 sync_contaazul_sales.delay(company_id)
-                sync_contaazul_stock.delay(company_id)
-            # elif erp == "bling":
-            #     sync_bling_sales.delay(company_id)
-            #     sync_bling_stock.delay(company_id)
+            elif erp == "bling":
+                sync_bling_sales.delay(company_id)
 
 
 # Celery Beat: executa dispatch_all a cada 30 minutos
